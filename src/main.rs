@@ -185,6 +185,18 @@ async fn run_wav(args: &Args, config: &Config) -> Result<()> {
 }
 
 fn run_desktop(args: Args, config: Config) -> Result<()> {
+    if !config.overlay.enabled && !config.tray.enabled {
+        let (ui_tx, _) = watch::channel(UiSnapshot::default());
+        let progress = Progress(ui_tx);
+        let (sender, mut controls) = tokio::sync::mpsc::unbounded_channel();
+        return runtime()?.block_on(async {
+            if args.overlay_demo {
+                demo(&progress, &mut controls).await
+            } else {
+                run_live(&args, &config, &progress, sender, &mut controls).await
+            }
+        });
+    }
     let (ui_tx, ui_rx) = watch::channel(UiSnapshot::default());
     let (desktop_tx, desktop_rx) = std::sync::mpsc::channel();
     let (tray_tx, mut tray_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -265,6 +277,9 @@ impl Progress {
         });
     }
     fn text(&self, received: &ReceivedText) {
+        if self.0.receiver_count() == 0 {
+            return;
+        }
         if let Some(text) = received.recover() {
             self.0.send_modify(|state| state.text = text);
         }

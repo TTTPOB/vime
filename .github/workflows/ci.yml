@@ -19,6 +19,7 @@ jobs:
         with:
           toolchain: 1.99.0
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - name: Install Linux Chinese fonts
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
@@ -38,7 +39,7 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test --locked --test overlay_windows -- --ignored --nocapture --test-threads=1
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && hashFiles('target/overlay-screenshots/index.html') != ''
         with:
           name: overlay-review-${{ runner.os }}
           path: target/overlay-screenshots/

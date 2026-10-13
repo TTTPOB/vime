@@ -6,6 +6,8 @@ Iced 字幕浮窗显示实时文字与识别状态，托盘提供字幕开关、
 
 目前只开发客户端和独立 mock。Mock 返回预设结果，不识别语音；真实模型及 NAS 适配器由你另行部署。协议见 [docs/PROTOCOL.md](docs/PROTOCOL.md)，是固定的 Realtime 转写子集，不能保证任意声称 OpenAI compatible 的服务直接可用。
 
+![实时字幕预览](docs/assets/subtitles.png)
+
 ## 构建与快速检查
 
 Windows x64 发布包见 [Releases](https://github.com/TTTPOB/vime/releases)。解压后包含客户端、独立 mock、示例配置和协议文档。
@@ -89,7 +91,7 @@ enabled = true
 
 字幕使用系统字体和高级文本排版，不打包字体文件。字体名称不存在时，日志记录警告并回退到系统 sans-serif。托盘的 **Show subtitles** 可在运行时开关字幕，**Restart** 取消当前识别并重新初始化热键监听，**Stop** 退出程序；Restart 沿用启动时配置，修改 TOML 后请 Stop 再启动。
 
-`--no-window` 保留托盘和后台热键，全程隐藏字幕；`--no-tray` 隐藏托盘。两者一起使用时仍可通过 `--stop` 退出。`--foreground` 可同时用于终端调试。关闭字幕窗口不会结束后台程序。
+`--no-window` 保留托盘和后台热键，全程隐藏字幕；`--no-tray` 隐藏托盘。两者一起使用时仅启动后台引擎，不初始化 GUI；仍可通过 `--stop` 退出。`--foreground` 可同时用于终端调试。关闭字幕窗口不会结束后台程序。
 
 ```powershell
 .\vime.exe --config .\vime.toml --no-window

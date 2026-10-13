@@ -299,7 +299,7 @@ fn prepare_window(_: window::Id) -> Task<Message> {
 #[cfg(windows)]
 fn prepare_window(id: window::Id) -> Task<Message> {
     window::run(id, |native| {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use raw_window_handle::RawWindowHandle;
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
         if let Ok(handle) = native.window_handle() {
             if let RawWindowHandle::Win32(handle) = handle.as_raw() {
