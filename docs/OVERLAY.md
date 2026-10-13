@@ -34,4 +34,4 @@ These launch the real demo, verify that its window keeps the foreground applicat
 
 ## Resource measurements
 
-After `cargo build --release --bins`, run `./scripts/overlay-metrics.ps1`. The JSON report records executable size, sampled working set and CPU for the visible demo and windowless demo. CPU is expressed as a percentage of one core. CI includes the report in `vime-windows-x64`. These measurements isolate the desktop shell: microphone capture and network transcription are absent from the demo, and runner measurements are not a substitute for measurements on the target desktop.
+With the running vime client stopped, build using `cargo build --release --bins` and run `./scripts/overlay-metrics.ps1`. The JSON report records executable size, sampled working set and CPU for the idle tray client, visible demo and windowless demo. CPU is expressed as a percentage of one core. CI includes the report in `vime-windows-x64`. These measurements isolate the desktop shell: microphone capture and network transcription are absent from the demo, and runner measurements are not a substitute for measurements on the target desktop.
