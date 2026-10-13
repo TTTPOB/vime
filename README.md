@@ -80,6 +80,8 @@ status = os.environ["VIME_TRANSCRIPT_STATUS"]  # final 或 recovered
 
 真实麦克风、Windows 用户隐私授权、物理设备热插拔仍需实际 Windows 验证。虚拟音频 CI 能验证 WASAPI 采集链路，但不证明物理麦克风可用。仓库包含 workflow 不代表已在 GitHub 成功运行；以实际 Actions 日志和产物为准。
 
+可选的虚拟声卡探针在一次性 CI runner 上明确授予麦克风访问权限；它不代替 Windows 11 隐私设置界面的实际验收，客户端不会修改本机权限。
+
 客户端不会默认保存音频或转写历史，日志不打印转写文本。为测试显式传入 mock 的 `--capture-wav` 才会保存收到的音频；`--report` 保存协议计数。
 
 ```sh

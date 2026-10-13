@@ -63,7 +63,11 @@ an output WAV or receiving canned mock text is insufficient evidence.
 The core workflows do not install a virtual audio driver. The separately
 dispatched `Optional real WASAPI probe` downloads a pinned official VB-CABLE
 ZIP, checks its SHA-256 and trusted Windows signatures, and runs only the
-original signed vendor installer. It never imports certificates, bypasses
+original signed vendor installer. The disposable runner explicitly grants
+microphone access through AppPrivacy policies and machine/user ConsentStore
+fixtures after printing their previous non-secret values. These fixtures
+model an authorized device and do not validate Windows 11 privacy UI behavior.
+The workflow never imports certificates, bypasses
 signing enforcement, or reboots the runner. Installation or endpoint failure
 is reported as NOT VERIFIED. Its ignored `windows_audio` test sends a 440 Hz
 tone through real WASAPI playback and the client capture code, then checks
