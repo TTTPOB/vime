@@ -30,9 +30,9 @@ function Measure-Client([string[]]$LaunchArguments) {
 }
 $result = @{
     executable_bytes = (Get-Item $Executable).Length
-    idle = (Measure-Client @('--no-clipboard', '--log-file', 'target/overlay-idle.log'))
-    visible = (Measure-Client @('--overlay-demo', '--no-tray'))
-    windowless = (Measure-Client @('--overlay-demo', '--no-tray', '--no-window'))
+    idle = (Measure-Client -LaunchArguments @('--no-clipboard', '--log-file', 'target/overlay-idle.log'))
+    visible = (Measure-Client -LaunchArguments @('--overlay-demo', '--no-tray'))
+    windowless = (Measure-Client -LaunchArguments @('--overlay-demo', '--no-tray', '--no-window'))
     environment = "$([Environment]::OSVersion.VersionString); $([Environment]::ProcessorCount) logical CPUs"
     workload = 'Idle: actual tray client waiting for a hotkey. Visible/windowless: demo excludes microphone and network.'
 }

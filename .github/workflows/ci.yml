@@ -36,7 +36,13 @@ jobs:
       - name: Windows system input probe
         if: runner.os == 'Windows'
         run: cargo test --locked --test windows_api send_input_probe -- --ignored --nocapture
-      - run: cargo test --all-targets --locked
+      - name: Run Linux tests
+        if: runner.os != 'Windows'
+        run: cargo test --all-targets --locked
+      - name: Run Windows tests
+        if: runner.os == 'Windows'
+        # PowerShell-backed output tests share cold runtime startup resources.
+        run: cargo test --all-targets --locked -- --test-threads=1
       - name: Windows overlay lifecycle probe
         if: runner.os == 'Windows'
         run: cargo test --locked --test overlay_windows -- --ignored --nocapture --test-threads=1
