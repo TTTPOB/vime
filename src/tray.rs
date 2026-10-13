@@ -323,6 +323,7 @@ mod windows {
                     _ => None,
                 };
                 if let Some(command) = command {
+                    tracing::info!(?command, "tray command selected");
                     let _ = state.sender.send(command);
                 }
                 return 0;

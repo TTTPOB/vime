@@ -338,7 +338,9 @@ fn prepare_window(id: window::Id) -> Task<Message> {
                     SetWindowLongPtrW(
                         hwnd,
                         GWL_EXSTYLE,
-                        style | WS_EX_NOACTIVATE as isize | WS_EX_TOOLWINDOW as isize,
+                        (style & !(WS_EX_APPWINDOW as isize))
+                            | WS_EX_NOACTIVATE as isize
+                            | WS_EX_TOOLWINDOW as isize,
                     );
                     let mut work = std::mem::zeroed::<windows_sys::Win32::Foundation::RECT>();
                     if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut _ as *mut _, 0)
