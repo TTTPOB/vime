@@ -1,0 +1,6 @@
+/target/
+/dist/
+vime.toml
+*.log
+*.wav
+!tests/fixtures/*.wav

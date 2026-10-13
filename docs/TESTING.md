@@ -1,0 +1,83 @@
+# Validation boundaries
+
+Run the portable checks with a stable Rust toolchain:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --all-targets --locked
+```
+
+The `CI` workflow runs these checks on Linux and Windows Server 2022. The
+`Windows connectivity probe` workflow can be dispatched separately before
+implementation is complete. It only checks runner/toolchain availability and
+prints the actual process session; it does not validate client functionality.
+
+## Windows API evidence
+
+`tests/windows_api.rs` is compiled only on Windows:
+
+- `real_clipboard_unicode_roundtrip` calls the client's output API and reads
+  the actual Windows clipboard back, including Chinese, a newline, and emoji.
+- `register_hotkey_conflict_and_thread_message` registers a real hotkey, tests
+  a conflicting registration on another thread, and explicitly posts a
+  `WM_HOTKEY`. This tests API registration and message handling, **not** a
+  keyboard-triggered hotkey.
+- `send_input_probe` is ignored during ordinary tests and explicitly invoked
+  in Windows CI. It injects Ctrl+Alt+Shift+F11 and requires an actual system
+  `WM_HOTKEY` to arrive. An insertion failure or missing message fails the
+  probe; it is never reported as successful by skipping the assertion.
+
+```powershell
+cargo test --locked --test windows_api send_input_probe -- --ignored --nocapture
+```
+
+These tests use and overwrite the user-session clipboard and inject synthetic
+keyboard input. Use a disposable test desktop when running them locally.
+`platform_send_input_probe` additionally drives the actual client listener
+through push-to-talk and toggle modes, including key release and repeated
+keydown suppression. Both input probes are explicitly invoked by the same
+CI filter. Neither proves physical keyboard behavior or Windows 11 privacy
+settings.
+
+## Audio and backend evidence
+
+The independent `vime-mock` process uses actual WebSocket connections. WAV
+input tests validate audio normalization and network/output behavior, but do
+not exercise a Windows recording device. WSS tests separately validate TLS.
+
+Real WASAPI recording requires an available recording endpoint. A virtual
+cable experiment must install a reviewed, signed driver and feed a known audio
+signal through its playback endpoint into the client's actual capture code.
+It must compare captured duration, sample rate, and signal content; creating
+an output WAV or receiving canned mock text is insufficient evidence.
+The baseline workflows do not install a virtual audio driver and therefore
+make no claim that real WASAPI capture has been validated in CI.
+
+## Local Windows acceptance
+
+On the target Windows machine, verify:
+
+1. Alt+F9 press starts recording and release stops in push-to-talk mode;
+   toggle mode starts/stops on separate presses without repeat triggers.
+2. Chinese final text arrives in the clipboard, and an optional script gets
+   exactly one final result through stdin. There is no automatic paste.
+3. Actual microphone selection, privacy denial, silence, unplug/replug,
+   and an unavailable device produce useful errors and allow recovery.
+4. Delayed final responses, disconnects, cancellation, and subsequent
+   recordings do not emit stale results or duplicate script invocations.
+5. Real NAS WSS works with the documented event subset and a trusted TLS
+   certificate; deploying that backend remains the user's separate task.
+
+## Release artifacts
+
+A pushed version tag such as `v0.1.0` triggers the `Release` workflow. It reruns
+Windows formatting, lint, and tests, then packages both release executables,
+the example TOML configuration, README, license, and protocol/testing docs.
+GitHub Release receives the ZIP and SHA-256 checksum. Only that job has
+`contents: write`; ordinary CI has `contents: read`.
+
+The release workflow runs ordinary Windows tests, while the explicit
+`SendInput` capability probe belongs to CI. Check the CI run for the exact
+release commit and disclose any capability that has not passed before calling
+its Windows behavior validated.

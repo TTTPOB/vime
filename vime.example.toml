@@ -1,0 +1,21 @@
+[server]
+url = "ws://127.0.0.1:8765/v1/realtime"
+model = "mock-asr"
+# api_key_env = "VIME_ASR_TOKEN" # Authorization: Bearer，从环境变量读取
+connect_timeout_ms = 10000
+final_timeout_ms = 30000
+
+[hotkey]
+key = "Alt+F9"
+mode = "push_to_talk" # 或 toggle：按一下开始，再按一下停止
+
+[output]
+clipboard = true
+# 不经过隐式 shell；数组第一个元素是程序，其余是参数。
+# 文本通过 UTF-8 stdin 传入，无额外换行，发送完后关闭 stdin。
+# command = ["python", "C:\\scripts\\on_transcript.py"]
+command = []
+# 默认恢复文字也触发 command，环境 VIME_TRANSCRIPT_STATUS=recovered。
+# recovery_command = ["python", "C:\\scripts\\on_error.py"]
+# recovery_command = [] # 禁用恢复脚本，仍可写入剪贴板
+script_timeout_ms = 10000
