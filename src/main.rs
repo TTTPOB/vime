@@ -373,6 +373,9 @@ async fn run_live(
                         progress.start();
                         let result = record_live(config, args.device.as_deref(), controls, progress).await;
                         let recovered = matches!(&result, Ok(Outcome::Recovered { .. }));
+                        if let Ok(Outcome::Recovered { error, .. }) = &result {
+                            tracing::warn!(error = %error, "recognition interrupted; received text available for recovery");
+                        }
                         match result {
                             Ok(Outcome::Final(text)) | Ok(Outcome::Recovered { text, .. }) => {
                                 if let Some(action) = pending_cancel(controls) {
@@ -398,7 +401,7 @@ async fn run_live(
                                         }
                                     };
                                     match delivery {
-                                        Ok(()) if recovered => { tracing::warn!("received text recovered; result may be incomplete"); progress.finish(UiPhase::Recovered, &text, "已交付部分文字 · 结果可能不完整"); },
+                                        Ok(()) if recovered => { tracing::info!("partial text delivered; result may be incomplete"); progress.finish(UiPhase::Recovered, &text, "已交付部分文字 · 结果可能不完整"); },
                                         Ok(()) => { tracing::info!("final text delivered"); progress.finish(UiPhase::Delivered, &text, if config.output.clipboard { "已复制到剪贴板" } else { "识别完成" }); },
                                         Err(error) => { tracing::error!(error = %error, "delivery failed; not retried"); progress.finish(UiPhase::Error, &text, "交付失败 · 请查看日志"); }
                                     }

@@ -53,31 +53,6 @@ struct Overlay {
     mode: HotkeyMode,
 }
 
-// Temporary diagnostic: preserve Iced's Tokio executor behavior while locating shutdown.
-struct ShutdownProbeExecutor(Option<tokio::runtime::Runtime>);
-impl iced::Executor for ShutdownProbeExecutor {
-    fn new() -> std::io::Result<Self> {
-        tokio::runtime::Runtime::new().map(|runtime| Self(Some(runtime)))
-    }
-    fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
-        std::mem::drop(self.0.as_ref().unwrap().spawn(future));
-    }
-    fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _guard = self.0.as_ref().unwrap().enter();
-        f()
-    }
-    fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
-        self.0.as_ref().unwrap().block_on(future)
-    }
-}
-impl Drop for ShutdownProbeExecutor {
-    fn drop(&mut self) {
-        tracing::info!("overlay executor runtime drop starting");
-        drop(self.0.take());
-        tracing::info!("overlay executor runtime drop completed");
-    }
-}
-
 pub fn run(
     receiver: watch::Receiver<UiSnapshot>,
     config: &OverlayConfig,
@@ -111,7 +86,6 @@ pub fn run(
         Overlay::update,
         Overlay::view,
     )
-    .executor::<ShutdownProbeExecutor>()
     .subscription(Overlay::subscription)
     .theme(Theme::Dark)
     .style(|_, _| iced::theme::Style {
@@ -177,6 +151,17 @@ impl Overlay {
             match command {
                 DesktopCommand::Exit => {
                     tracing::info!("overlay shutdown requested");
+                    // winit 0.30.13 still waits after AboutToWait sets its exit flag.
+                    // A queued native message releases that wait when no windows remain.
+                    #[cfg(windows)]
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                            windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+                            windows_sys::Win32::UI::WindowsAndMessaging::WM_NULL,
+                            0,
+                            0,
+                        );
+                    }
                     return iced::exit();
                 }
                 DesktopCommand::Show(enabled) => {
