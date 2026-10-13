@@ -1,0 +1,17 @@
+name: Windows connectivity probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-environment:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe Windows toolchain and user session
+        shell: pwsh
+        run: |
+          rustc --version
+          cargo --version
+          Get-ComputerInfo -Property WindowsProductName, WindowsVersion
+          Get-Process -Id $PID | Select-Object Id, SessionId
