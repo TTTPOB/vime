@@ -23,6 +23,10 @@ prints the actual process session; it does not validate client functionality.
   a conflicting registration on another thread, and explicitly posts a
   `WM_HOTKEY`. This tests API registration and message handling, **not** a
   keyboard-triggered hotkey.
+- `single_instance_mutex_is_exclusive_and_released` checks real session mutex
+  exclusivity and cleanup. `named_shutdown_event_reaches_listener_and_is_cleaned_up`
+  signals the actual named shutdown event, receives the listener event, and
+  verifies teardown releases the operating system object.
 - `send_input_probe` is ignored during ordinary tests and explicitly invoked
   in Windows CI. It injects Ctrl+Alt+Shift+F11 and requires an actual system
   `WM_HOTKEY` to arrive. An insertion failure or missing message fails the
@@ -66,6 +70,10 @@ On the target Windows machine, verify:
    and an unavailable device produce useful errors and allow recovery.
 4. Delayed final responses, disconnects, cancellation, and subsequent
    recordings do not emit stale results or duplicate script invocations.
+   On error or timeout, received text is recoverable and ordinary scripts run
+   with `VIME_TRANSCRIPT_STATUS=recovered`; normal results use `final`.
+   Cancellation emits no result. Explicit `recovery_command` overrides and
+   disabling recovery scripts must behave as configured.
 5. Real NAS WSS works with the documented event subset and a trusted TLS
    certificate; deploying that backend remains the user's separate task.
 

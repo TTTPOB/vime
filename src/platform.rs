@@ -285,7 +285,7 @@ pub mod hotkey {
         }
         pub fn start(config: &HotkeyConfig) -> Result<HotkeyListener> {
             let (key, modifiers) = parse_key(&config.key)?;
-            let mode = config.mode.clone();
+            let mode = config.mode;
             let (sender, events) = mpsc::unbounded_channel();
             let (ready_tx, ready_rx) = sync::sync_channel(1);
             let (reset_tx, reset_rx) = sync::channel::<sync::SyncSender<()>>();

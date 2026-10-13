@@ -134,14 +134,20 @@ async fn run() -> Result<()> {
                 Some(ControlEvent::Start) => {
                     match record_live(&config, args.device.as_deref(), &mut hotkey.events).await {
                         Ok(Outcome::Final(text)) => {
-                            if pending_cancel(&mut hotkey.events)? { hotkey.reset()?; continue; }
+                            if let Some(action) = pending_cancel(&mut hotkey.events) {
+                                if matches!(action, Outcome::Shutdown) { break; }
+                                hotkey.reset()?; continue;
+                            }
                             if text.trim().is_empty() { tracing::info!("no speech returned"); }
                             else if let Err(error) = vime::output::deliver(&text, &config.output).await {
                                 tracing::error!(error = %error, "final delivery failed; not retried");
                             } else { tracing::info!("final text delivered"); }
                         },
                         Ok(Outcome::Recovered { text, error }) => {
-                            if pending_cancel(&mut hotkey.events)? { hotkey.reset()?; continue; }
+                            if let Some(action) = pending_cancel(&mut hotkey.events) {
+                                if matches!(action, Outcome::Shutdown) { break; }
+                                hotkey.reset()?; continue;
+                            }
                             tracing::warn!(error = %error, "recovering received text; result may be incomplete");
                             if let Err(error) = vime::output::deliver_recovered(&text, &config.output).await {
                                 tracing::error!(error = %error, "recovery delivery failed; not retried");
@@ -201,16 +207,16 @@ fn recover_result(result: Result<Outcome>, received: &ReceivedText) -> Result<Ou
 }
 
 /// Cancellation takes precedence over a result already ready on the socket.
-fn pending_cancel(controls: &mut UnboundedReceiver<ControlEvent>) -> Result<bool> {
+fn pending_cancel(controls: &mut UnboundedReceiver<ControlEvent>) -> Option<Outcome> {
     let mut cancelled = false;
     while let Ok(event) = controls.try_recv() {
         match event {
             ControlEvent::Cancel => cancelled = true,
-            ControlEvent::Shutdown => bail!("shutdown requested"),
+            ControlEvent::Shutdown => return Some(Outcome::Shutdown),
             _ => {}
         }
     }
-    Ok(cancelled)
+    cancelled.then_some(Outcome::Cancelled)
 }
 
 async fn transcribe_wav(
@@ -401,5 +407,76 @@ async fn wait_final(
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vime::mock::{MockOptions, Scenario};
+
+    async fn connect_mock(scenario: Scenario) -> (Connection, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = vime::config::ServerConfig {
+            url: format!("ws://{}", listener.local_addr().unwrap()),
+            ..Default::default()
+        };
+        let task = tokio::spawn(async move {
+            let _ = vime::mock::serve(
+                listener,
+                MockOptions {
+                    scenario,
+                    ..Default::default()
+                },
+            )
+            .await;
+        });
+        (Connection::connect(&config).await.unwrap(), task)
+    }
+
+    #[tokio::test]
+    async fn queued_cancel_and_shutdown_precede_ready_final() {
+        for (event, shutdown) in [
+            (ControlEvent::Cancel, false),
+            (ControlEvent::Shutdown, true),
+        ] {
+            let (mut connection, task) = connect_mock(Scenario::Success).await;
+            connection.append(&[100; 480]).await.unwrap();
+            connection.commit().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let (tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
+            tx.send(event).unwrap();
+            let mut received = ReceivedText::default();
+            let outcome = wait_final(&mut connection, &mut controls, 500, &mut received)
+                .await
+                .unwrap();
+            if shutdown {
+                assert!(matches!(outcome, Outcome::Shutdown));
+            } else {
+                assert!(matches!(outcome, Outcome::Cancelled));
+            }
+            assert!(received.recover().is_none());
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_recovers_partial_but_cancellation_does_not() {
+        let (mut connection, task) = connect_mock(Scenario::Timeout).await;
+        connection.append(&[100; 480]).await.unwrap();
+        let mut received = ReceivedText::default();
+        check_recording_event(connection.next_event().await.unwrap(), &mut received).unwrap();
+        connection.commit().await.unwrap();
+        let (_tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
+        let result = wait_final(&mut connection, &mut controls, 20, &mut received).await;
+        match recover_result(result, &received).unwrap() {
+            Outcome::Recovered { text, .. } => assert_eq!(text, "你好，"),
+            _ => panic!("expected recovered text"),
+        }
+        assert!(matches!(
+            recover_result(Ok(Outcome::Cancelled), &received).unwrap(),
+            Outcome::Cancelled
+        ));
+        task.abort();
     }
 }

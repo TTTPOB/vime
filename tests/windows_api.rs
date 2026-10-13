@@ -242,3 +242,51 @@ fn platform_send_input_probe() {
     });
     println!("PASS: client hotkey listener handles push-to-talk, toggle, release, and repeated keydown via SendInput");
 }
+
+#[test]
+fn single_instance_mutex_is_exclusive_and_released() {
+    let _guard = DESKTOP_TEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let instance = vime::platform::SingleInstance::acquire().unwrap();
+    assert!(
+        vime::platform::SingleInstance::acquire().is_err(),
+        "a second instance in the same session must fail"
+    );
+    drop(instance);
+    let replacement = vime::platform::SingleInstance::acquire()
+        .expect("dropping the first instance must release its mutex");
+    drop(replacement);
+}
+
+#[test]
+fn named_shutdown_event_reaches_listener_and_is_cleaned_up() {
+    use vime::{
+        config::{HotkeyConfig, HotkeyMode},
+        ControlEvent,
+    };
+    let _guard = DESKTOP_TEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        vime::platform::request_shutdown().is_err(),
+        "no listener should own the named event yet"
+    );
+    let mut listener = vime::platform::hotkey::start(&HotkeyConfig {
+        key: "Alt+F9".into(),
+        mode: HotkeyMode::PushToTalk,
+    })
+    .unwrap();
+    vime::platform::request_shutdown().unwrap();
+    let event = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), listener.events.recv())
+            .await
+            .unwrap()
+    });
+    assert_eq!(event, Some(ControlEvent::Shutdown));
+    drop(listener);
+    assert!(
+        vime::platform::request_shutdown().is_err(),
+        "dropping the listener must release its named event"
+    );
+}
