@@ -367,7 +367,11 @@ fn live_client_e2e(stream: &cpal::Stream, input_name: &str) {
     );
     assert_eq!(captured.commit_count, 1);
     assert_eq!(captured.clear_count, 0);
-    assert!(captured.validation_error.is_none());
+    assert!(
+        captured.validation_error.is_none(),
+        "mock session validation error: {:?}",
+        captured.validation_error
+    );
     assert_eq!(spec.sample_rate, 24_000);
     assert_eq!(spec.channels, 1);
     assert_eq!(spec.bits_per_sample, 16);

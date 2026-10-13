@@ -431,7 +431,12 @@ async fn wait_final(
                 let event = event?;
                 received.observe(&event)?;
                 if let Some(text) = collector.observe(event)? {
-                    // Dropping this isolated connection cannot leak late events into the next recording.
+                    // A confirmed final remains valid even if the peer cannot complete
+                    // its closing handshake. Closing must not delay delivery indefinitely.
+                    match tokio::time::timeout(Duration::from_millis(250), connection.close()).await {
+                        Ok(Ok(())) => {},
+                        _ => tracing::warn!("final received; WebSocket closing handshake incomplete"),
+                    }
                     return Ok(Outcome::Final(text));
                 }
             },

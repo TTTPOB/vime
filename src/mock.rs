@@ -117,7 +117,12 @@ async fn conversation(
                 ws.send(Message::Pong(payload)).await?;
                 continue;
             }
-            Message::Close(_) => break,
+            Message::Close(_) => {
+                // Reading Close queues Tungstenite's reply; flush it before
+                // dropping the transport so a normal session ends cleanly.
+                ws.flush().await?;
+                break;
+            }
             _ => continue,
         };
         let event: Value = serde_json::from_str(&text).context("invalid client JSON")?;

@@ -158,10 +158,31 @@ impl Connection {
     }
 
     pub async fn close(&mut self) -> Result<()> {
-        tokio::time::timeout(self.io_timeout, self.socket.close(None))
-            .await
-            .context("ASR close timed out")?
-            .map_err(|_| anyhow!("ASR close failed"))
+        // Sending Close alone does not complete the handshake: keep reading until
+        // the peer acknowledges it. Late transcript events are intentionally discarded.
+        tokio::time::timeout(self.io_timeout, async {
+            self.socket
+                .close(None)
+                .await
+                .map_err(|_| anyhow!("ASR close failed"))?;
+            loop {
+                match self.socket.next().await {
+                    Some(Ok(Message::Close(_))) => match self.socket.flush().await {
+                        Ok(()) | Err(tokio_tungstenite::tungstenite::Error::ConnectionClosed) => {
+                            return Ok(())
+                        }
+                        Err(_) => bail!("ASR close acknowledgement failed"),
+                    },
+                    Some(Ok(_)) => {}
+                    Some(Err(tokio_tungstenite::tungstenite::Error::ConnectionClosed)) => {
+                        return Ok(())
+                    }
+                    Some(Err(_)) | None => bail!("ASR disconnected without close acknowledgement"),
+                }
+            }
+        })
+        .await
+        .context("ASR close timed out")?
     }
 
     async fn send(&mut self, value: Value) -> Result<()> {

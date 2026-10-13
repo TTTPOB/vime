@@ -215,6 +215,73 @@ async fn oversized_server_message_is_rejected() {
 }
 
 #[tokio::test]
+async fn graceful_close_drains_late_events_and_waits_for_peer_ack() {
+    let (listener, config) = listener().await;
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        let update: Value =
+            serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        ws.send(Message::text(
+            json!({"type":"session.updated","session":update["session"]}).to_string(),
+        ))
+        .await
+        .unwrap();
+        // A final already delivered by the application may be duplicated before Close.
+        ws.send(Message::text(
+            json!({"type":"conversation.item.input_audio_transcription.completed",
+            "item_id":"late","transcript":"must not deliver"})
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+        assert!(matches!(
+            ws.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        // Read queues tungstenite's automatic close reply; flushing transmits it.
+        ws.flush().await.unwrap();
+    });
+    let mut connection = Connection::connect(&config).await.unwrap();
+    let start = std::time::Instant::now();
+    connection.close().await.unwrap();
+    assert!(start.elapsed() >= std::time::Duration::from_millis(35));
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn graceful_close_has_a_bounded_peer_ack_timeout() {
+    let (listener, mut config) = listener().await;
+    config.connect_timeout_ms = 50;
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        let update: Value =
+            serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        ws.send(Message::text(
+            json!({"type":"session.updated","session":update["session"]}).to_string(),
+        ))
+        .await
+        .unwrap();
+        assert!(matches!(
+            ws.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+        // Deliberately never flush the automatically queued acknowledgement.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    });
+    let mut connection = Connection::connect(&config).await.unwrap();
+    assert!(connection
+        .close()
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("timed out"));
+    task.abort();
+}
+
+#[tokio::test]
 async fn cancel_clears_and_prevents_late_output() {
     let (listener, config) = listener().await;
     let task = tokio::spawn(async move {
