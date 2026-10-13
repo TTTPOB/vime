@@ -8,6 +8,8 @@
 
 ## 构建与快速检查
 
+Windows x64 发布包见 [Releases](https://github.com/TTTPOB/vime/releases)。解压后包含客户端、独立 mock、示例配置和协议文档。
+
 安装稳定版 Rust，然后：
 
 ```sh
@@ -81,6 +83,8 @@ status = os.environ["VIME_TRANSCRIPT_STATUS"]  # final 或 recovered
 真实麦克风、Windows 用户隐私授权、物理设备热插拔仍需实际 Windows 验证。虚拟音频 CI 能验证 WASAPI 采集链路，但不证明物理麦克风可用。仓库包含 workflow 不代表已在 GitHub 成功运行；以实际 Actions 日志和产物为准。
 
 可选的虚拟声卡探针在一次性 CI runner 上明确授予麦克风访问权限；它不代替 Windows 11 隐私设置界面的实际验收，客户端不会修改本机权限。
+
+已验证的 CI 记录与具体边界见 [docs/TESTING.md](docs/TESTING.md)，包括真实热键、剪贴板、后台启动/退出，以及虚拟声卡的真实 WASAPI 信号采集。
 
 客户端不会默认保存音频或转写历史，日志不打印转写文本。为测试显式传入 mock 的 `--capture-wav` 才会保存收到的音频；`--report` 保存协议计数。
 

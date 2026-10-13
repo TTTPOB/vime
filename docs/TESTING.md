@@ -75,6 +75,20 @@ tone through real WASAPI playback and the client capture code, then checks
 run proves this virtual-device path, while physical microphone and privacy
 checks remain separate.
 
+## Recorded verification
+
+On 2026-10-13, [core CI](https://github.com/TTTPOB/vime/actions/runs/38365349755)
+passed on Linux and Windows: 33 portable tests on Linux; 34 ordinary Windows
+tests plus both explicit `SendInput` probes. The Windows tests include detached
+background startup and clean `--stop` shutdown.
+
+The [signed virtual audio probe](https://github.com/TTTPOB/vime/actions/runs/38365344075)
+also passed after explicit microphone permission fixtures: WASAPI playback was
+48 kHz stereo, and the client's actual capture/normalization produced 24 kHz
+mono PCM16 with 46,519 non-silent samples and the expected 440 Hz signal.
+This proves the virtual WASAPI path, not physical microphone behavior, Windows
+11 privacy UI, or real model recognition quality.
+
 ## Local Windows acceptance
 
 On the target Windows machine, verify:
