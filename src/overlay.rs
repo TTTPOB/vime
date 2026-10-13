@@ -47,7 +47,8 @@ struct Overlay {
     enabled: bool,
     dismissed: bool,
     window: Option<window::Id>,
-    font: Font,
+    font: Option<Font>,
+    font_family: String,
     key: String,
     mode: HotkeyMode,
 }
@@ -61,8 +62,9 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let enabled = config.enabled;
     let key = key.to_owned();
-    let font = configured_font(&config.font_family);
+    let font_family = config.font_family.clone();
     let controls = Arc::new(Mutex::new(controls));
+    tracing::info!("overlay daemon starting");
     iced::daemon(
         move || {
             (
@@ -73,7 +75,8 @@ pub fn run(
                     enabled,
                     dismissed: false,
                     window: None,
-                    font,
+                    font: None,
+                    font_family: font_family.clone(),
                     key: key.clone(),
                     mode,
                 },
@@ -89,9 +92,10 @@ pub fn run(
         background_color: Color::TRANSPARENT,
         text_color: Color::WHITE,
     })
-    .default_font(font)
+    .default_font(Font::DEFAULT)
     .title(|_: &Overlay, _: window::Id| String::from("vime subtitles"))
     .run()?;
+    tracing::info!("overlay daemon exited");
     Ok(())
 }
 fn configured_font(family: &str) -> Font {
@@ -145,7 +149,10 @@ impl Overlay {
             .try_recv()
         {
             match command {
-                DesktopCommand::Exit => return iced::exit(),
+                DesktopCommand::Exit => {
+                    tracing::info!("overlay shutdown requested");
+                    return iced::exit();
+                }
                 DesktopCommand::Show(enabled) => {
                     self.enabled = enabled;
                     self.dismissed = false;
@@ -164,6 +171,9 @@ impl Overlay {
         let visible = self.enabled && !self.dismissed && self.snapshot.phase != UiPhase::Idle;
         match (visible, self.window) {
             (true, None) => {
+                if self.font.is_none() {
+                    self.font = Some(configured_font(&self.font_family));
+                }
                 let settings = window::Settings {
                     size: iced::Size::new(480.0, 190.0),
                     visible: !cfg!(windows),
@@ -193,7 +203,12 @@ impl Overlay {
         }
     }
     fn view(&self, _: window::Id) -> Element<'_, Message> {
-        view_snapshot(&self.snapshot, self.font, &self.key, self.mode)
+        view_snapshot(
+            &self.snapshot,
+            self.font.unwrap_or(Font::DEFAULT),
+            &self.key,
+            self.mode,
+        )
     }
 }
 
@@ -225,8 +240,8 @@ pub fn view_snapshot<'a>(
         String::new()
     };
     let header = row![
-        text("●").size(11).color(accent),
-        text(label).size(11).color(accent),
+        text("●").font(font).size(11).color(accent),
+        text(label).font(font).size(11).color(accent),
         iced::widget::Space::new().width(Length::Fill),
         text(timer).size(12).color(Color::from_rgb8(135, 150, 169))
     ]
@@ -274,7 +289,10 @@ pub fn view_snapshot<'a>(
         .size(11)
         .color(Color::from_rgb8(135, 150, 169)),
         iced::widget::Space::new().width(Length::Fill),
-        text("vime").size(12).color(Color::from_rgb8(135, 150, 169))
+        text("vime")
+            .font(font)
+            .size(12)
+            .color(Color::from_rgb8(135, 150, 169))
     ];
     container(column![header, transcript, footer].spacing(12))
         .padding(18)

@@ -29,6 +29,4 @@ if ((Get-Content $stdout -Raw).Trim() -ne 'configuration is valid') { throw 'Arc
 Write-Host 'PASS: extracted release ZIP executable version and shipped configuration.'
 $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $package.zip" | Set-Content "$archive.sha256" -Encoding ascii
-$recordedHash = ((Get-Content "$archive.sha256" -Raw).Trim() -split ' ')[0]
-if ($recordedHash -ne (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Final ZIP checksum verification failed.' }
 Remove-Item $staging, $smokeDirectory -Recurse -Force

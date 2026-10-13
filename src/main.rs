@@ -351,6 +351,11 @@ async fn run_live(
 ) -> Result<()> {
     let _instance = platform::SingleInstance::acquire()?;
     'restart: loop {
+        while let Ok(event) = controls.try_recv() {
+            if event == ControlEvent::Shutdown {
+                break 'restart;
+            }
+        }
         let mut hide_at = None;
         let hotkey = platform::hotkey::start_into(&config.hotkey, sender.clone())?;
         progress.idle();

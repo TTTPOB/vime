@@ -20,6 +20,8 @@ jobs:
           toolchain: 1.99.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Install Linux Chinese fonts
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
@@ -51,12 +53,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/overlay-metrics.ps1
+      - name: Package Windows preview
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object name -eq 'vime').version
+          ./scripts/package.ps1 -Version "v$version"
+          Copy-Item target/overlay-metrics.json dist/overlay-metrics.json
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
         with:
           name: vime-windows-x64
-          path: |
-            target/release/vime.exe
-            target/release/vime-mock.exe
-            target/overlay-metrics.json
+          path: dist/*
           if-no-files-found: error
