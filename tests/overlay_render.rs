@@ -76,7 +76,7 @@ fn screenshots_cover_statuses_scales_and_long_transcripts() {
             "finalizing",
             UiPhase::Finalizing,
             MIXED.to_owned(),
-            "正在完成识别…",
+            "正在完成转写 · 暂不能录音",
         ),
         (
             "delivered",

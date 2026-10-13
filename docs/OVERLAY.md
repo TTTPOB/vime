@@ -1,6 +1,6 @@
 # Subtitle overlay and tray
 
-The Windows desktop client runs in the background. A compact subtitle card appears while recording, follows the newest text, and closes after delivery. Closing the card leaves the client running. The tray provides restart, an overlay toggle and stop. Restart cancels a pending recording and recreates the transcription worker and hotkey with the startup configuration. Stop cancels pending work and exits the program. Restart the program to load configuration changes.
+The Windows desktop client runs in the background. A compact subtitle card appears while recording and follows the newest text. Success hides after 0.6 seconds; recovery and error notices remain for 2 seconds. Processing is shown in red, and the hotkey refuses new recordings until final transcription and delivery finish. Busy-time key presses are discarded. Closing the card leaves the client running. The tray provides restart, an overlay toggle and stop. Restart cancels a pending recording and recreates the transcription worker and hotkey with the startup configuration. Stop cancels pending work and exits the program. Restart the program to load configuration changes.
 
 Configure the overlay in `vime.toml`:
 
@@ -10,7 +10,7 @@ enabled = true
 font_family = "Microsoft YaHei UI"
 ```
 
-The font must be installed on the machine. An unavailable family produces a warning and uses system sans-serif. Iced's advanced shaping handles mixed Chinese/English text and system fallback; vime does not bundle fonts. `--no-window` runs without the subtitle card; `--no-tray` disables the tray. Combining them keeps the existing keyboard-driven background workflow.
+The font must be installed on the machine. An unavailable family produces a warning and uses system sans-serif. Iced's advanced shaping handles mixed Chinese/English text and system fallback; vime does not bundle fonts. `--no-window` runs without the subtitle card; `--no-tray` disables the tray. Combining them runs only the keyboard-driven background engine without initializing the GUI.
 
 ## Review the interface
 

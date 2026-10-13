@@ -319,20 +319,20 @@ async fn demo(progress: &Progress, controls: &mut UnboundedReceiver<ControlEvent
         }
         match elapsed {
             0..=599 => {}
-            600..=4599 => progress.finish(
+            600..=3599 => progress.finish(
                 UiPhase::Recording,
-                samples[((elapsed - 600) / 1000).min(3) as usize],
+                samples[((elapsed - 600) / 750).min(3) as usize],
                 "松开快捷键结束 · Esc 取消",
             ),
-            4600..=5599 => progress.phase(UiPhase::Finalizing, "正在完成识别…"),
-            5600..=6699 => progress.phase(UiPhase::Delivered, "预览：已复制到剪贴板"),
-            6700..=7399 => progress.idle(),
-            7400..=8499 => progress.finish(
+            3600..=4599 => progress.phase(UiPhase::Finalizing, "正在完成转写 · 暂不能录音"),
+            4600..=5199 => progress.phase(UiPhase::Delivered, "预览：已复制到剪贴板"),
+            5200..=5799 => progress.idle(),
+            5800..=7799 => progress.finish(
                 UiPhase::Recovered,
                 "识别中断，保留已经收到的文字。",
                 "预览：部分结果可能不完整",
             ),
-            8500..=9399 => progress.finish(
+            7800..=9799 => progress.finish(
                 UiPhase::Error,
                 "无法连接识别服务",
                 "预览：请检查服务地址和网络",
@@ -369,6 +369,7 @@ async fn run_live(
                 _ = hide_deadline(hide_at) => { progress.idle(); hide_at = None; },
                 event = controls.recv() => match event {
                     Some(ControlEvent::Start) => {
+                        hotkey.block_new_recordings();
                         progress.start();
                         let result = record_live(config, args.device.as_deref(), controls, progress).await;
                         let recovered = matches!(&result, Ok(Outcome::Recovered { .. }));
@@ -408,11 +409,11 @@ async fn run_live(
                             Ok(Outcome::Restart) => continue 'restart,
                             Err(error) => { tracing::error!(error = %error, "recording failed; ready for next recording"); progress.finish(UiPhase::Error, "无法完成识别", "请检查麦克风或服务连接 · 详情见日志"); },
                         }
-                        hide_at = Some(tokio::time::Instant::now() + Duration::from_millis(if matches!(progress.0.borrow().phase, UiPhase::Recovered | UiPhase::Error) { 4000 } else { 1200 }));
-                        hotkey.reset()?;
+                        hide_at = Some(tokio::time::Instant::now() + Duration::from_millis(if matches!(progress.0.borrow().phase, UiPhase::Recovered | UiPhase::Error) { 2000 } else { 600 }));
                         while let Ok(event) = controls.try_recv() {
                             match event { ControlEvent::Shutdown => break 'restart, ControlEvent::Restart => continue 'restart, _ => {} }
                         }
+                        hotkey.reset()?;
                     },
                     Some(ControlEvent::Shutdown) | None => break 'restart,
                     Some(ControlEvent::Restart) => continue 'restart,
@@ -570,7 +571,7 @@ async fn record_live_inner(
             biased;
             _ = console_interrupt() => return Ok(Outcome::Shutdown),
             event = controls.recv() => match event {
-                Some(ControlEvent::Stop) => { capture.stop()?; progress.phase(UiPhase::Finalizing, "正在完成识别…"); break; },
+                Some(ControlEvent::Stop) => { capture.stop()?; progress.phase(UiPhase::Finalizing, "正在完成转写 · 暂不能录音"); break; },
                 Some(ControlEvent::Cancel) => return Ok(Outcome::Cancelled),
                 Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
                 Some(ControlEvent::Restart) => return Ok(Outcome::Restart),
@@ -625,7 +626,7 @@ async fn record_live_inner(
         }
     }
     tracing::info!("waiting for final text");
-    progress.phase(UiPhase::Finalizing, "正在完成识别…");
+    progress.phase(UiPhase::Finalizing, "正在完成转写 · 暂不能录音");
     wait_final(
         &mut connection,
         controls,
@@ -772,7 +773,7 @@ mod tests {
         assert_eq!(ui_rx.borrow().text, "你好，");
         assert_eq!(ui_rx.borrow().phase, UiPhase::Recording);
         connection.commit().await.unwrap();
-        progress.phase(UiPhase::Finalizing, "正在完成识别…");
+        progress.phase(UiPhase::Finalizing, "正在完成转写 · 暂不能录音");
         let (_tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
         let result = wait_final(
             &mut connection,
@@ -791,6 +792,27 @@ mod tests {
         assert_eq!(ui_rx.borrow().phase, UiPhase::Finalizing);
         progress.idle();
         assert!(ui_rx.borrow().text.is_empty());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn starts_during_finalization_are_discarded_instead_of_queued() {
+        let (mut connection, task) = connect_mock(Scenario::Delayed).await;
+        connection.append(&[100; 480]).await.unwrap();
+        connection.commit().await.unwrap();
+        let (tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
+        for _ in 0..3 {
+            tx.send(ControlEvent::Start).unwrap();
+        }
+        let mut received = ReceivedText::default();
+        let outcome = wait_final(&mut connection, &mut controls, 1000, &mut received, None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Final(_)));
+        assert!(
+            controls.try_recv().is_err(),
+            "busy-time start must not become a future recording"
+        );
         task.abort();
     }
 

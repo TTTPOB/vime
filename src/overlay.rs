@@ -222,7 +222,7 @@ pub fn view_snapshot<'a>(
         UiPhase::Idle => ("READY", Color::from_rgb8(135, 150, 169)),
         UiPhase::Connecting => ("CONNECTING", Color::from_rgb8(156, 175, 255)),
         UiPhase::Recording => ("LISTENING", Color::from_rgb8(106, 225, 190)),
-        UiPhase::Finalizing => ("FINISHING", Color::from_rgb8(156, 175, 255)),
+        UiPhase::Finalizing => ("PROCESSING", Color::from_rgb8(255, 151, 151)),
         UiPhase::Delivered => ("DONE", Color::from_rgb8(106, 225, 190)),
         UiPhase::Recovered => ("RECOVERED", Color::from_rgb8(245, 199, 112)),
         UiPhase::Error => ("NEEDS ATTENTION", Color::from_rgb8(255, 151, 151)),
