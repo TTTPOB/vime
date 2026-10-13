@@ -56,6 +56,9 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let args = Args::parse();
+    if args.stop {
+        return platform::request_shutdown();
+    }
     let config_path = args
         .config
         .clone()
@@ -83,9 +86,6 @@ async fn run() -> Result<()> {
         config.output.clipboard = false;
     }
     config.validate()?;
-    if args.stop {
-        return platform::request_shutdown();
-    }
     if args.check_config {
         println!("configuration is valid");
         return Ok(());
@@ -115,10 +115,10 @@ async fn run() -> Result<()> {
             Outcome::Shutdown => return Ok(()),
         };
         // All diagnostics are separate from transcript stdout in WAV mode.
+        println!("{text}");
         if !text.trim().is_empty() {
             vime::output::deliver(&text, &config.output).await?;
         }
-        println!("{text}");
         return Ok(());
     }
     let _instance = platform::SingleInstance::acquire()?;

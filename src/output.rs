@@ -3,8 +3,8 @@ use anyhow::{bail, Context, Result};
 use std::{process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command};
 
-/// A successful final is delivered once by the caller. Clipboard is updated first;
-/// a script failure does not roll back a successful clipboard write.
+/// A successful final is delivered once by the caller. Both configured outputs
+/// are attempted independently; a script failure does not roll back the clipboard.
 pub async fn deliver(text: &str, config: &OutputConfig) -> Result<()> {
     deliver_with_status(text, config, &config.command, "final").await
 }
@@ -21,12 +21,26 @@ async fn deliver_with_status(
     argv: &[String],
     status: &str,
 ) -> Result<()> {
+    let mut errors = Vec::new();
     if config.clipboard {
-        crate::platform::set_clipboard(text).context("clipboard delivery failed")?;
+        if let Err(error) =
+            crate::platform::set_clipboard(text).context("clipboard delivery failed")
+        {
+            errors.push(format!("{error:#}"));
+        }
     }
-    if argv.is_empty() {
-        return Ok(());
+    if !argv.is_empty() {
+        if let Err(error) = run_script(text, argv, status, config.script_timeout_ms).await {
+            errors.push(format!("{error:#}"));
+        }
     }
+    if !errors.is_empty() {
+        bail!("{}", errors.join("; "));
+    }
+    Ok(())
+}
+
+async fn run_script(text: &str, argv: &[String], status: &str, timeout_ms: u64) -> Result<()> {
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])
@@ -42,7 +56,7 @@ async fn deliver_with_status(
         .stdin
         .take()
         .context("output command stdin unavailable")?;
-    let result = tokio::time::timeout(Duration::from_millis(config.script_timeout_ms), async {
+    let result = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
         stdin
             .write_all(text.as_bytes())
             .await
@@ -70,10 +84,7 @@ async fn deliver_with_status(
                 .await
                 .context("cannot stop timed-out output command")?;
             let _ = child.wait().await;
-            bail!(
-                "output command timed out after {} ms",
-                config.script_timeout_ms
-            )
+            bail!("output command timed out after {} ms", timeout_ms)
         }
     }
 }
@@ -162,5 +173,28 @@ mod tests {
             std::fs::read_to_string(&recovered).unwrap(),
             "recovered\n独立"
         );
+    }
+    #[tokio::test]
+    async fn clipboard_failure_does_not_skip_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("received");
+        let mut c = config(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "cat > \"$1\"".into(),
+                "test".into(),
+                target.to_string_lossy().into(),
+            ],
+            1000,
+        );
+        c.clipboard = true; // The Unix platform intentionally has no clipboard implementation.
+        let error = deliver("保留文本", &c).await.unwrap_err();
+        assert!(error.to_string().contains("clipboard delivery failed"));
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "保留文本");
+        c.command = vec!["sh".into(), "-c".into(), "exit 7".into()];
+        let error = deliver("", &c).await.unwrap_err().to_string();
+        assert!(error.contains("clipboard delivery failed"));
+        assert!(error.contains("exited"));
     }
 }

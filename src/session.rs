@@ -32,10 +32,16 @@ impl ReceivedText {
         Ok(())
     }
     pub fn recover(&self) -> Option<String> {
-        let id = self.committed.as_ref().or(self.latest.as_ref())?;
-        self.items
-            .get(id)
+        self.committed
+            .as_ref()
+            .and_then(|id| self.items.get(id))
             .filter(|text| !text.trim().is_empty())
+            .or_else(|| {
+                self.latest
+                    .as_ref()
+                    .and_then(|id| self.items.get(id))
+                    .filter(|text| !text.trim().is_empty())
+            })
             .cloned()
     }
 }
