@@ -225,8 +225,7 @@ fn choose_tray_item(
     target: &ForegroundTarget,
 ) {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_DOWN, VK_HOME,
-        VK_RETURN,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_DOWN, VK_RETURN,
     };
     target.activate();
     let mut child_pid = 0;
@@ -272,9 +271,9 @@ fn choose_tray_item(
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let keys = std::iter::once(VK_HOME)
-        .chain(std::iter::repeat_n(VK_DOWN, down))
-        .chain(std::iter::once(VK_RETURN));
+    // Popup menus begin without a keyboard selection; the first Down selects
+    // Show subtitles, then subsequent Downs skip the separator.
+    let keys = std::iter::repeat_n(VK_DOWN, down + 1).chain(std::iter::once(VK_RETURN));
     let mut inputs = Vec::new();
     for key in keys {
         for flags in [0, KEYEVENTF_KEYUP] {
