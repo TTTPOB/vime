@@ -2,7 +2,7 @@
 
 极简 Rust Windows 语音转写客户端：按住 **Alt+F9** 录音，松开后等待服务端最终转写，将文本写入剪贴板，并可交给外部脚本。支持配置成按一下开始、再按一下停止。
 
-没有 GUI、托盘或浮窗，不自动粘贴，不内置 ASR、LLM 清洗、热词或历史记录。音频在录音期间通过 WebSocket 流式上传；后台接收 partial，正常时只输出最终确认文本；出错时尽量交付已经收到的文本。
+Iced 字幕浮窗显示实时文字与识别状态，托盘提供字幕开关、Restart 和 Stop。音频在录音期间通过 WebSocket 流式上传；正常时交付最终确认文本，出错时尽量交付已经收到的文字。程序不自动粘贴，也不保存转写历史。
 
 目前只开发客户端和独立 mock。Mock 返回预设结果，不识别语音；真实模型及 NAS 适配器由你另行部署。协议见 [docs/PROTOCOL.md](docs/PROTOCOL.md)，是固定的 Realtime 转写子集，不能保证任意声称 OpenAI compatible 的服务直接可用。
 
@@ -74,7 +74,29 @@ status = os.environ["VIME_TRANSCRIPT_STATUS"]  # final 或 recovered
 
 这是当前用户会话中的后台程序，**不要安装成 Windows Service**。服务的 Session 0 无法替代用户的热键和剪贴板会话。需要自启动时，用启动文件夹或“仅当用户登录时运行”的计划任务，使用可执行文件与配置文件的绝对路径，不需要常规管理员权限。
 
-默认以无控制台后台方式运行。需要终端调试时加 `--foreground`，通过 Ctrl+C 停止；后台运行可执行 `.\vime.exe --config .\vime.toml --stop` 正常退出，也可在任务管理器结束 `vime.exe`。程序单实例运行，重复启动会报错。日志默认写入配置文件旁的 `vime.log`，可用 `--log-file PATH` 指定。Esc 取消正在处理的录音，不交付文字。
+默认以无控制台后台方式运行，空闲时只有托盘图标；按快捷键录音时，屏幕底部中央出现只读字幕卡片。成功后短暂显示交付状态，恢复部分文字与失败会保留更久，随后回到后台。需要终端调试时加 `--foreground`，通过 Ctrl+C 停止；后台运行可执行 `.\vime.exe --config .\vime.toml --stop` 正常退出，也可在任务管理器结束 `vime.exe`。程序单实例运行，重复启动会报错。日志默认写入配置文件旁的 `vime.log`，可用 `--log-file PATH` 指定。Esc 取消正在处理的录音，不交付文字。
+
+## 字幕与托盘
+
+```toml
+[overlay]
+enabled = true
+font_family = "Microsoft YaHei UI"
+
+[tray]
+enabled = true
+```
+
+字幕使用系统字体和高级文本排版，不打包字体文件。字体名称不存在时，日志记录警告并回退到系统 sans-serif。托盘的 **Show subtitles** 可在运行时开关字幕，**Restart** 取消当前识别并重新初始化热键监听，**Stop** 退出程序；Restart 沿用启动时配置，修改 TOML 后请 Stop 再启动。
+
+`--no-window` 保留托盘和后台热键，全程隐藏字幕；`--no-tray` 隐藏托盘。两者一起使用时仍可通过 `--stop` 退出。`--foreground` 可同时用于终端调试。关闭字幕窗口不会结束后台程序。
+
+```powershell
+.\vime.exe --config .\vime.toml --no-window
+.\vime.exe --overlay-demo --no-tray
+```
+
+`--overlay-demo` 自动播放十秒的中文、英文和状态预览，不使用麦克风、识别服务或剪贴板。`--wav`、`--check-config`、`--test-connection` 和 `--stop` 保持无 GUI。截图、窗口验收和性能测量见 [docs/OVERLAY.md](docs/OVERLAY.md)。
 
 ## 验证与首版限制
 

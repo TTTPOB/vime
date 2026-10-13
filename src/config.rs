@@ -8,6 +8,34 @@ pub struct Config {
     pub server: ServerConfig,
     pub hotkey: HotkeyConfig,
     pub output: OutputConfig,
+    pub overlay: OverlayConfig,
+    pub tray: TrayConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OverlayConfig {
+    pub enabled: bool,
+    pub font_family: String,
+}
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            font_family: "Microsoft YaHei UI".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TrayConfig {
+    pub enabled: bool,
+}
+impl Default for TrayConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +129,9 @@ impl Config {
             {
                 bail!("server.api_key_env must be an environment variable name");
             }
+        }
+        if self.overlay.font_family.trim().is_empty() || self.overlay.font_family.contains('\0') {
+            bail!("overlay.font_family must be a nonempty system font family name");
         }
         crate::platform::hotkey::validate_key(&self.hotkey.key)?;
         for (name, value) in [

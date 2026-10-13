@@ -125,7 +125,22 @@ pub mod hotkey {
     }
     #[cfg(windows)]
     pub fn start(config: &HotkeyConfig) -> Result<HotkeyListener> {
-        windows::start(config)
+        windows::start(config, None)
+    }
+    /// Route keyboard and shutdown events into the desktop's shared control queue.
+    pub fn start_into(
+        config: &HotkeyConfig,
+        sender: mpsc::UnboundedSender<ControlEvent>,
+    ) -> Result<HotkeyListener> {
+        #[cfg(windows)]
+        {
+            windows::start(config, Some(sender))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = sender;
+            start(config)
+        }
     }
     #[cfg(windows)]
     impl Drop for HotkeyListener {
@@ -283,10 +298,14 @@ pub mod hotkey {
             }
             CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
         }
-        pub fn start(config: &HotkeyConfig) -> Result<HotkeyListener> {
+        pub fn start(
+            config: &HotkeyConfig,
+            external: Option<mpsc::UnboundedSender<ControlEvent>>,
+        ) -> Result<HotkeyListener> {
             let (key, modifiers) = parse_key(&config.key)?;
             let mode = config.mode;
             let (sender, events) = mpsc::unbounded_channel();
+            let sender = external.unwrap_or(sender);
             let (ready_tx, ready_rx) = sync::sync_channel(1);
             let (reset_tx, reset_rx) = sync::channel::<sync::SyncSender<()>>();
             let thread = std::thread::spawn(move || unsafe {

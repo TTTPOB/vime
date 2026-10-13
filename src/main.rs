@@ -2,7 +2,9 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use std::{path::PathBuf, time::Duration};
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{mpsc::UnboundedReceiver, watch};
+use vime::overlay::{DesktopCommand, UiPhase, UiSnapshot};
+use vime::tray::TrayCommand;
 use vime::{
     config::Config,
     platform,
@@ -35,6 +37,14 @@ struct Args {
     foreground: bool,
     #[arg(long)]
     stop: bool,
+    /// Keep the tray and hotkey active without showing subtitles.
+    #[arg(long)]
+    no_window: bool,
+    #[arg(long)]
+    no_tray: bool,
+    /// Play a ten-second overlay preview without a microphone or server.
+    #[arg(long, conflicts_with_all = ["wav", "test_connection", "check_config", "stop"])]
+    overlay_demo: bool,
 }
 
 enum Outcome {
@@ -42,6 +52,7 @@ enum Outcome {
     Recovered { text: String, error: String },
     Cancelled,
     Shutdown,
+    Restart,
 }
 
 static CONSOLE_CONTROL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -56,8 +67,7 @@ async fn console_interrupt() {
     std::future::pending::<()>().await;
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+fn main() {
     let diagnostic = std::env::args().skip(1).any(|arg| {
         matches!(
             arg.as_str(),
@@ -75,14 +85,20 @@ async fn main() {
     if diagnostic {
         platform::attach_parent_console();
     }
-    if let Err(error) = run().await {
+    if let Err(error) = run() {
         tracing::error!(error = %error, "operation failed");
         eprintln!("vime: {error:#}");
         std::process::exit(1);
     }
 }
 
-async fn run() -> Result<()> {
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?)
+}
+
+fn run() -> Result<()> {
     let args = Args::parse();
     let _ = CONSOLE_CONTROL.set(args.foreground || args.wav.is_some());
     if args.stop {
@@ -114,86 +130,274 @@ async fn run() -> Result<()> {
     if args.no_clipboard {
         config.output.clipboard = false;
     }
+    if args.no_window {
+        config.overlay.enabled = false;
+    }
+    if args.no_tray {
+        config.tray.enabled = false;
+    }
     config.validate()?;
     if args.check_config {
         println!("configuration is valid");
         return Ok(());
     }
     if args.test_connection {
-        let mut connection = Connection::connect(&config.server).await?;
-        connection.cancel().await?;
+        runtime()?.block_on(async {
+            let mut connection = Connection::connect(&config.server).await?;
+            connection.cancel().await
+        })?;
         println!("connection and transcription session are ready");
         return Ok(());
     }
-    if let Some(path) = args.wav {
-        let samples = vime::audio::load_wav(path)?;
-        if samples.is_empty() {
-            bail!("WAV input is empty");
-        }
-        let (_tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
-        let mut received = ReceivedText::default();
-        let result = transcribe_wav(&samples, &config, &mut controls, &mut received).await;
-        let text = match recover_result(result, &received)? {
-            Outcome::Final(text) => text,
-            Outcome::Recovered { text, error } => {
-                println!("{text}");
-                vime::output::deliver_recovered(&text, &config.output).await?;
-                bail!("{error}; received text was recovered and may be incomplete");
-            }
-            Outcome::Cancelled => bail!("recording was cancelled"),
-            Outcome::Shutdown => return Ok(()),
-        };
-        // All diagnostics are separate from transcript stdout in WAV mode.
-        println!("{text}");
-        if !text.trim().is_empty() {
-            vime::output::deliver(&text, &config.output).await?;
-        }
-        return Ok(());
+    if args.wav.is_some() {
+        return runtime()?.block_on(run_wav(&args, &config));
     }
-    let _instance = platform::SingleInstance::acquire()?;
-    let mut hotkey = platform::hotkey::start(&config.hotkey)?;
-    tracing::info!("ready; configured hotkey starts recording");
-    if args.foreground {
-        eprintln!("vime is ready; Ctrl+C stops the process");
+    #[cfg(not(windows))]
+    if !args.overlay_demo {
+        bail!("live mode requires a Windows user session");
     }
+    run_desktop(args, config)
+}
+
+async fn run_wav(args: &Args, config: &Config) -> Result<()> {
+    let samples = vime::audio::load_wav(args.wav.as_ref().unwrap())?;
+    if samples.is_empty() {
+        bail!("WAV input is empty");
+    }
+    let (_tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
+    let mut received = ReceivedText::default();
+    let result = transcribe_wav(&samples, config, &mut controls, &mut received).await;
+    let text = match recover_result(result, &received)? {
+        Outcome::Final(text) => text,
+        Outcome::Recovered { text, error } => {
+            println!("{text}");
+            vime::output::deliver_recovered(&text, &config.output).await?;
+            bail!("{error}; received text was recovered and may be incomplete");
+        }
+        Outcome::Cancelled => bail!("recording was cancelled"),
+        Outcome::Shutdown | Outcome::Restart => return Ok(()),
+    };
+    println!("{text}");
+    if !text.trim().is_empty() {
+        vime::output::deliver(&text, &config.output).await?;
+    }
+    Ok(())
+}
+
+fn run_desktop(args: Args, config: Config) -> Result<()> {
+    let (ui_tx, ui_rx) = watch::channel(UiSnapshot::default());
+    let (desktop_tx, desktop_rx) = std::sync::mpsc::channel();
+    let (tray_tx, mut tray_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _tray = vime::tray::start(
+        config.tray.enabled,
+        config.overlay.enabled,
+        &config.hotkey.key,
+        tray_tx.clone(),
+    )?;
+    let overlay_config = config.overlay.clone();
+    let hotkey_config = config.hotkey.clone();
+    let worker_desktop = desktop_tx.clone();
+    let worker = std::thread::Builder::new()
+        .name("vime-session".into())
+        .spawn(move || {
+            let result = (|| {
+                runtime()?.block_on(async {
+                    let (control_tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
+                    let hotkey_tx = control_tx.clone();
+                    let desktop = worker_desktop.clone();
+                    let bridge = tokio::spawn(async move {
+                        while let Some(command) = tray_rx.recv().await {
+                            match command {
+                                TrayCommand::Restart => {
+                                    let _ = control_tx.send(ControlEvent::Restart);
+                                }
+                                TrayCommand::Stop => {
+                                    let _ = control_tx.send(ControlEvent::Shutdown);
+                                }
+                                TrayCommand::ToggleOverlay(enabled) => {
+                                    let _ = desktop.send(DesktopCommand::Show(enabled));
+                                }
+                            }
+                        }
+                    });
+                    let progress = Progress(ui_tx);
+                    let result = if args.overlay_demo {
+                        demo(&progress, &mut controls).await
+                    } else {
+                        run_live(&args, &config, &progress, hotkey_tx, &mut controls).await
+                    };
+                    bridge.abort();
+                    result
+                })
+            })();
+            let _ = worker_desktop.send(DesktopCommand::Exit);
+            result
+        })?;
+    let gui = vime::overlay::run(
+        ui_rx,
+        &overlay_config,
+        desktop_rx,
+        &hotkey_config.key,
+        hotkey_config.mode,
+    );
+    // Also stop the business thread if the native event loop exits unexpectedly.
+    let _ = tray_tx.send(TrayCommand::Stop);
+    let session = worker
+        .join()
+        .map_err(|_| anyhow::anyhow!("session thread panicked"))?;
+    gui?;
+    session
+}
+
+struct Progress(watch::Sender<UiSnapshot>);
+impl Progress {
+    fn start(&self) {
+        self.0.send_replace(UiSnapshot {
+            phase: UiPhase::Connecting,
+            started: Some(std::time::Instant::now()),
+            ..Default::default()
+        });
+    }
+    fn phase(&self, phase: UiPhase, detail: &str) {
+        self.0.send_modify(|state| {
+            state.phase = phase;
+            state.detail = detail.into();
+        });
+    }
+    fn text(&self, received: &ReceivedText) {
+        if let Some(text) = received.recover() {
+            self.0.send_modify(|state| state.text = text);
+        }
+    }
+    fn finish(&self, phase: UiPhase, text: &str, detail: &str) {
+        self.0.send_modify(|state| {
+            state.phase = phase;
+            state.text = text.into();
+            state.detail = detail.into();
+        });
+    }
+    fn idle(&self) {
+        self.0.send_replace(UiSnapshot::default());
+    }
+}
+
+async fn demo(progress: &Progress, controls: &mut UnboundedReceiver<ControlEvent>) -> Result<()> {
+    progress.start();
+    let started = tokio::time::Instant::now();
+    let samples = [
+        "我想让这个语音输入客户端", "我想让这个语音输入客户端，增加一个轻量的实时预览窗口。",
+        "我想让这个语音输入客户端，增加一个轻量的实时预览窗口。\nHello, vime. 你好，世界！繁體中文測試 123。",
+        "我想让这个语音输入客户端，增加一个轻量的实时预览窗口。\nHello, vime. 你好，世界！繁體中文測試 123。\n文字会随着识别持续增长，最后一句始终保持可见。",
+    ];
     loop {
         tokio::select! {
-            _ = console_interrupt() => break,
-            event = hotkey.events.recv() => match event {
-                Some(ControlEvent::Start) => {
-                    match record_live(&config, args.device.as_deref(), &mut hotkey.events).await {
-                        Ok(Outcome::Final(text)) => {
-                            if let Some(action) = pending_cancel(&mut hotkey.events) {
-                                if matches!(action, Outcome::Shutdown) { break; }
-                                hotkey.reset()?; continue;
-                            }
-                            if text.trim().is_empty() { tracing::info!("no speech returned"); }
-                            else if let Err(error) = vime::output::deliver(&text, &config.output).await {
-                                tracing::error!(error = %error, "final delivery failed; not retried");
-                            } else { tracing::info!("final text delivered"); }
-                        },
-                        Ok(Outcome::Recovered { text, error }) => {
-                            if let Some(action) = pending_cancel(&mut hotkey.events) {
-                                if matches!(action, Outcome::Shutdown) { break; }
-                                hotkey.reset()?; continue;
-                            }
-                            tracing::warn!(error = %error, "recovering received text; result may be incomplete");
-                            if let Err(error) = vime::output::deliver_recovered(&text, &config.output).await {
-                                tracing::error!(error = %error, "recovery delivery failed; not retried");
-                            }
-                        },
-                        Ok(Outcome::Cancelled) => tracing::info!("recording cancelled"),
-                        Ok(Outcome::Shutdown) => break,
-                        Err(error) => tracing::error!(error = %error, "recording failed; ready for next recording"),
-                    }
-                    hotkey.reset()?;
-                    // Key presses during finalizing/delivery are not queued recordings.
-                    while let Ok(event) = hotkey.events.try_recv() {
-                        if event == ControlEvent::Shutdown { return Ok(()); }
-                    }
-                },
-                Some(ControlEvent::Shutdown) | None => break,
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+            event = controls.recv() => match event {
+                Some(ControlEvent::Shutdown) | None => return Ok(()),
+                Some(ControlEvent::Restart) => progress.start(),
                 _ => {},
+            }
+        }
+        let elapsed = started.elapsed().as_millis();
+        if elapsed >= 10_000 {
+            return Ok(());
+        }
+        match elapsed {
+            0..=599 => {}
+            600..=4599 => progress.finish(
+                UiPhase::Recording,
+                samples[((elapsed - 600) / 1000).min(3) as usize],
+                "松开快捷键结束 · Esc 取消",
+            ),
+            4600..=5599 => progress.phase(UiPhase::Finalizing, "正在完成识别…"),
+            5600..=6699 => progress.phase(UiPhase::Delivered, "预览：已复制到剪贴板"),
+            6700..=7399 => progress.idle(),
+            7400..=8499 => progress.finish(
+                UiPhase::Recovered,
+                "识别中断，保留已经收到的文字。",
+                "预览：部分结果可能不完整",
+            ),
+            8500..=9399 => progress.finish(
+                UiPhase::Error,
+                "无法连接识别服务",
+                "预览：请检查服务地址和网络",
+            ),
+            _ => progress.idle(),
+        }
+    }
+}
+
+async fn run_live(
+    args: &Args,
+    config: &Config,
+    progress: &Progress,
+    sender: tokio::sync::mpsc::UnboundedSender<ControlEvent>,
+    controls: &mut UnboundedReceiver<ControlEvent>,
+) -> Result<()> {
+    let _instance = platform::SingleInstance::acquire()?;
+    'restart: loop {
+        let mut hide_at = None;
+        let hotkey = platform::hotkey::start_into(&config.hotkey, sender.clone())?;
+        progress.idle();
+        tracing::info!("ready; configured hotkey starts recording");
+        if args.foreground {
+            eprintln!("vime is ready; Ctrl+C stops the process");
+        }
+        loop {
+            tokio::select! {
+                _ = console_interrupt() => break 'restart,
+                _ = hide_deadline(hide_at) => { progress.idle(); hide_at = None; },
+                event = controls.recv() => match event {
+                    Some(ControlEvent::Start) => {
+                        progress.start();
+                        let result = record_live(config, args.device.as_deref(), controls, progress).await;
+                        let recovered = matches!(&result, Ok(Outcome::Recovered { .. }));
+                        match result {
+                            Ok(Outcome::Final(text)) | Ok(Outcome::Recovered { text, .. }) => {
+                                if let Some(action) = pending_cancel(controls) {
+                                    match action { Outcome::Shutdown => break 'restart, Outcome::Restart => continue 'restart, _ => { progress.idle(); hotkey.reset()?; continue; } }
+                                }
+                                if text.trim().is_empty() { progress.finish(UiPhase::Delivered, "没有检测到语音", "可以开始下一次录音"); }
+                                else {
+                                    let delivery = async {
+                                        if recovered { vime::output::deliver_recovered(&text, &config.output).await }
+                                        else { vime::output::deliver(&text, &config.output).await }
+                                    };
+                                    tokio::pin!(delivery);
+                                    let delivery = loop {
+                                        tokio::select! {
+                                            biased;
+                                            event = controls.recv() => match event {
+                                                Some(ControlEvent::Shutdown) | None => break 'restart,
+                                                Some(ControlEvent::Restart) => continue 'restart,
+                                                _ => {},
+                                            },
+                                            _ = console_interrupt() => break 'restart,
+                                            result = &mut delivery => break result,
+                                        }
+                                    };
+                                    match delivery {
+                                        Ok(()) if recovered => { tracing::warn!("received text recovered; result may be incomplete"); progress.finish(UiPhase::Recovered, &text, "已交付部分文字 · 结果可能不完整"); },
+                                        Ok(()) => { tracing::info!("final text delivered"); progress.finish(UiPhase::Delivered, &text, if config.output.clipboard { "已复制到剪贴板" } else { "识别完成" }); },
+                                        Err(error) => { tracing::error!(error = %error, "delivery failed; not retried"); progress.finish(UiPhase::Error, &text, "交付失败 · 请查看日志"); }
+                                    }
+                                }
+                            },
+                            Ok(Outcome::Cancelled) => { tracing::info!("recording cancelled"); progress.idle(); },
+                            Ok(Outcome::Shutdown) => break 'restart,
+                            Ok(Outcome::Restart) => continue 'restart,
+                            Err(error) => { tracing::error!(error = %error, "recording failed; ready for next recording"); progress.finish(UiPhase::Error, "无法完成识别", "请检查麦克风或服务连接 · 详情见日志"); },
+                        }
+                        hide_at = Some(tokio::time::Instant::now() + Duration::from_millis(if matches!(progress.0.borrow().phase, UiPhase::Recovered | UiPhase::Error) { 4000 } else { 1200 }));
+                        hotkey.reset()?;
+                        while let Ok(event) = controls.try_recv() {
+                            match event { ControlEvent::Shutdown => break 'restart, ControlEvent::Restart => continue 'restart, _ => {} }
+                        }
+                    },
+                    Some(ControlEvent::Shutdown) | None => break 'restart,
+                    Some(ControlEvent::Restart) => continue 'restart,
+                    _ => {},
+                }
             }
         }
     }
@@ -201,8 +405,22 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-fn check_recording_event(event: ServerEvent, received: &mut ReceivedText) -> Result<()> {
+async fn hide_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+fn check_recording_event(
+    event: ServerEvent,
+    received: &mut ReceivedText,
+    progress: Option<&Progress>,
+) -> Result<()> {
     received.observe(&event)?;
+    if let Some(progress) = progress {
+        progress.text(received);
+    }
     match event {
         ServerEvent::Error { message } => bail!("{message}"),
         ServerEvent::Final { .. } | ServerEvent::Committed { .. } => {
@@ -216,9 +434,10 @@ async fn record_live(
     config: &Config,
     device: Option<&str>,
     controls: &mut UnboundedReceiver<ControlEvent>,
+    progress: &Progress,
 ) -> Result<Outcome> {
     let mut received = ReceivedText::default();
-    let result = record_live_inner(config, device, controls, &mut received).await;
+    let result = record_live_inner(config, device, controls, &mut received, progress).await;
     recover_result(result, &received)
 }
 
@@ -242,6 +461,7 @@ fn pending_cancel(controls: &mut UnboundedReceiver<ControlEvent>) -> Option<Outc
         match event {
             ControlEvent::Cancel => cancelled = true,
             ControlEvent::Shutdown => return Some(Outcome::Shutdown),
+            ControlEvent::Restart => return Some(Outcome::Restart),
             _ => {}
         }
     }
@@ -266,7 +486,7 @@ async fn transcribe_wav(
                 biased;
                 _ = console_interrupt() => return Ok(Outcome::Shutdown),
                 _ = &mut tick => break,
-                event = connection.next_event() => check_recording_event(event?, received)?,
+                event = connection.next_event() => check_recording_event(event?, received, None)?,
             }
         }
     }
@@ -276,6 +496,7 @@ async fn transcribe_wav(
         controls,
         config.server.final_timeout_ms,
         received,
+        None,
     )
     .await
 }
@@ -285,6 +506,7 @@ async fn record_live_inner(
     device: Option<&str>,
     controls: &mut UnboundedReceiver<ControlEvent>,
     received: &mut ReceivedText,
+    progress: &Progress,
 ) -> Result<Outcome> {
     let mut capture = platform::capture::start(device)?;
     // Capture starts before connecting, so initial syllables are buffered.
@@ -303,6 +525,7 @@ async fn record_live_inner(
                 },
                 Some(ControlEvent::Cancel) => return Ok(Outcome::Cancelled),
                 Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
+                Some(ControlEvent::Restart) => return Ok(Outcome::Restart),
                 _ => {},
             },
             _ = console_interrupt() => return Ok(Outcome::Shutdown),
@@ -310,6 +533,14 @@ async fn record_live_inner(
         }
     };
     tracing::info!("recording");
+    progress.phase(
+        if released {
+            UiPhase::Finalizing
+        } else {
+            UiPhase::Recording
+        },
+        "",
+    );
     let mut sample_count = 0usize;
     loop {
         if released {
@@ -319,9 +550,10 @@ async fn record_live_inner(
             biased;
             _ = console_interrupt() => return Ok(Outcome::Shutdown),
             event = controls.recv() => match event {
-                Some(ControlEvent::Stop) => { capture.stop()?; break; },
+                Some(ControlEvent::Stop) => { capture.stop()?; progress.phase(UiPhase::Finalizing, "正在完成识别…"); break; },
                 Some(ControlEvent::Cancel) => return Ok(Outcome::Cancelled),
                 Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
+                Some(ControlEvent::Restart) => return Ok(Outcome::Restart),
                 _ => {},
             },
             frame = capture.frames.recv() => match frame {
@@ -332,7 +564,7 @@ async fn record_live_inner(
                 Some(Err(error)) => bail!("audio capture failed: {error}"),
                 None => break,
             },
-            event = connection.next_event() => check_recording_event(event?, received)?,
+            event = connection.next_event() => check_recording_event(event?, received, Some(progress))?,
         }
     }
     capture.stop()?;
@@ -364,6 +596,7 @@ async fn record_live_inner(
                 event = controls.recv() => match event {
                     Some(ControlEvent::Cancel) => return Ok(Outcome::Cancelled),
                     Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
+                Some(ControlEvent::Restart) => return Ok(Outcome::Restart),
                     _ => {},
                 },
                 _ = console_interrupt() => return Ok(Outcome::Shutdown),
@@ -372,11 +605,13 @@ async fn record_live_inner(
         }
     }
     tracing::info!("waiting for final text");
+    progress.phase(UiPhase::Finalizing, "正在完成识别…");
     wait_final(
         &mut connection,
         controls,
         config.server.final_timeout_ms,
         received,
+        Some(progress),
     )
     .await
 }
@@ -397,6 +632,7 @@ async fn append_audio(
                 event = controls.recv() => match event {
                     Some(ControlEvent::Cancel) => return Ok(Some(Outcome::Cancelled)),
                     Some(ControlEvent::Shutdown) | None => return Ok(Some(Outcome::Shutdown)),
+                    Some(ControlEvent::Restart) => return Ok(Some(Outcome::Restart)),
                     Some(ControlEvent::Stop) => { capture.stop()?; *released = true; },
                     _ => {},
                 },
@@ -413,34 +649,37 @@ async fn wait_final(
     controls: &mut UnboundedReceiver<ControlEvent>,
     timeout_ms: u64,
     received: &mut ReceivedText,
+    progress: Option<&Progress>,
 ) -> Result<Outcome> {
     let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms));
     tokio::pin!(deadline);
     let mut collector = FinalCollector::default();
     loop {
         tokio::select! {
-            biased;
-            event = controls.recv() => match event {
-                Some(ControlEvent::Cancel) => return Ok(Outcome::Cancelled),
-                Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
-                _ => {},
-            },
-            _ = console_interrupt() => return Ok(Outcome::Shutdown),
-            _ = &mut deadline => bail!("final transcription timed out"),
-            event = connection.next_event() => {
-                let event = event?;
-                received.observe(&event)?;
-                if let Some(text) = collector.observe(event)? {
-                    // A confirmed final remains valid even if the peer cannot complete
-                    // its closing handshake. Closing must not delay delivery indefinitely.
-                    match tokio::time::timeout(Duration::from_millis(250), connection.close()).await {
-                        Ok(Ok(())) => {},
-                        _ => tracing::warn!("final received; WebSocket closing handshake incomplete"),
+                biased;
+                event = controls.recv() => match event {
+                    Some(ControlEvent::Cancel) => return Ok(Outcome::Cancelled),
+                    Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
+                    Some(ControlEvent::Restart) => return Ok(Outcome::Restart),
+                    _ => {},
+                },
+                _ = console_interrupt() => return Ok(Outcome::Shutdown),
+                _ = &mut deadline => bail!("final transcription timed out"),
+                event = connection.next_event() => {
+                    let event = event?;
+                    received.observe(&event)?;
+        if let Some(progress) = progress { progress.text(received); }
+                    if let Some(text) = collector.observe(event)? {
+                        // A confirmed final remains valid even if the peer cannot complete
+                        // its closing handshake. Closing must not delay delivery indefinitely.
+                        match tokio::time::timeout(Duration::from_millis(250), connection.close()).await {
+                            Ok(Ok(())) => {},
+                            _ => tracing::warn!("final received; WebSocket closing handshake incomplete"),
+                        }
+                        return Ok(Outcome::Final(text));
                     }
-                    return Ok(Outcome::Final(text));
-                }
-            },
-        }
+                },
+            }
     }
 }
 
@@ -469,10 +708,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queued_cancel_and_shutdown_precede_ready_final() {
-        for (event, shutdown) in [
-            (ControlEvent::Cancel, false),
-            (ControlEvent::Shutdown, true),
+    async fn queued_cancel_shutdown_and_restart_precede_ready_final() {
+        for event in [
+            ControlEvent::Cancel,
+            ControlEvent::Shutdown,
+            ControlEvent::Restart,
         ] {
             let (mut connection, task) = connect_mock(Scenario::Success).await;
             connection.append(&[100; 480]).await.unwrap();
@@ -481,13 +721,13 @@ mod tests {
             let (tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
             tx.send(event).unwrap();
             let mut received = ReceivedText::default();
-            let outcome = wait_final(&mut connection, &mut controls, 500, &mut received)
+            let outcome = wait_final(&mut connection, &mut controls, 500, &mut received, None)
                 .await
                 .unwrap();
-            if shutdown {
-                assert!(matches!(outcome, Outcome::Shutdown));
-            } else {
-                assert!(matches!(outcome, Outcome::Cancelled));
+            match event {
+                ControlEvent::Shutdown => assert!(matches!(outcome, Outcome::Shutdown)),
+                ControlEvent::Restart => assert!(matches!(outcome, Outcome::Restart)),
+                _ => assert!(matches!(outcome, Outcome::Cancelled)),
             }
             assert!(received.recover().is_none());
             task.abort();
@@ -495,14 +735,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preview_streams_partial_and_replaces_it_with_authoritative_final() {
+        let (mut connection, task) = connect_mock(Scenario::Success).await;
+        let (ui_tx, ui_rx) = watch::channel(UiSnapshot::default());
+        let progress = Progress(ui_tx);
+        progress.start();
+        progress.phase(UiPhase::Recording, "");
+        connection.append(&[100; 480]).await.unwrap();
+        let mut received = ReceivedText::default();
+        check_recording_event(
+            connection.next_event().await.unwrap(),
+            &mut received,
+            Some(&progress),
+        )
+        .unwrap();
+        assert_eq!(ui_rx.borrow().text, "你好，");
+        assert_eq!(ui_rx.borrow().phase, UiPhase::Recording);
+        connection.commit().await.unwrap();
+        progress.phase(UiPhase::Finalizing, "正在完成识别…");
+        let (_tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
+        let result = wait_final(
+            &mut connection,
+            &mut controls,
+            500,
+            &mut received,
+            Some(&progress),
+        )
+        .await
+        .unwrap();
+        match result {
+            Outcome::Final(text) => assert_eq!(ui_rx.borrow().text, text),
+            _ => panic!("expected authoritative final"),
+        }
+        assert_eq!(ui_rx.borrow().text, "你好，世界。Hello, world!");
+        assert_eq!(ui_rx.borrow().phase, UiPhase::Finalizing);
+        progress.idle();
+        assert!(ui_rx.borrow().text.is_empty());
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn timeout_recovers_partial_but_cancellation_does_not() {
         let (mut connection, task) = connect_mock(Scenario::Timeout).await;
         connection.append(&[100; 480]).await.unwrap();
         let mut received = ReceivedText::default();
-        check_recording_event(connection.next_event().await.unwrap(), &mut received).unwrap();
+        check_recording_event(connection.next_event().await.unwrap(), &mut received, None).unwrap();
         connection.commit().await.unwrap();
         let (_tx, mut controls) = tokio::sync::mpsc::unbounded_channel();
-        let result = wait_final(&mut connection, &mut controls, 20, &mut received).await;
+        let result = wait_final(&mut connection, &mut controls, 20, &mut received, None).await;
         match recover_result(result, &received).unwrap() {
             Outcome::Recovered { text, .. } => assert_eq!(text, "你好，"),
             _ => panic!("expected recovered text"),

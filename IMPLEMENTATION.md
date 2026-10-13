@@ -1,40 +1,39 @@
-# Agreed scope and module contract
+# Architecture
 
-Rust no-GUI Windows user-session background client. Default hotkey Alt+F9,
-push-to-talk (press starts, release stops), configurable toggle mode too.
-Final text clipboard and optional script stdin; errors recover received text,
-defaulting to the ordinary script, optionally a separate recovery_command.
-Scripts receive VIME_TRANSCRIPT_STATUS=final/recovered. Cancellation never delivers.
-No auto-paste, ASR model, LLM,
-history, tray, UI, database. Independent WebSocket mock. Self-hosted NAS later.
-Protocol is a documented Realtime-inspired subset, not full OpenAI compatibility.
+vime is a Windows user-session push-to-talk transcription client. Alt+F9
+starts recording and release stops it; toggle mode is configurable. Each recording
+uses an isolated WebSocket connection and delivers the acknowledged final text to
+the clipboard and optional script. Interrupted recognition can recover received
+text; cancellation and Restart discard pending recognition.
 
-Architecture:
-- config.rs: Config { server: ServerConfig, hotkey: HotkeyConfig, output: OutputConfig };
-  ServerConfig { url:String, model:String, api_key_env:Option<String>, connect_timeout_ms:u64,
-  final_timeout_ms:u64 }; HotkeyConfig { key:String, mode:HotkeyMode };
-  HotkeyMode { PushToTalk, Toggle }; OutputConfig { clipboard:bool,
-  command:Vec<String>, recovery_command:Option<Vec<String>>, script_timeout_ms:u64 }; Config::load(path), validate().
-- protocol.rs: Connection::connect(&ServerConfig) async -> Result<Self>;
-  append(&[i16]), commit(), cancel() async; next_event() async -> Result<ServerEvent>.
-  ServerEvent { Delta {item_id:String,text:String}, Committed {item_id:String},
-  Final {item_id:String,text:String}, Error {message:String}, Other }.
-  24kHz mono little-endian PCM16 base64 JSON append, manual commit with VAD off.
-  Each recording is isolated in its own connection; commit acknowledgement identifies final item.
-- audio.rs: load_wav(path)->Result<Vec<i16>> (normalize to 24kHz mono), resampler helpers.
-- platform.rs: platform::hotkey::start(&HotkeyConfig)->Result<HotkeyListener>,
-  HotkeyListener { pub events:tokio::sync::mpsc::UnboundedReceiver<ControlEvent> }, Drop cleanup.
-  platform::capture::start(device:Option<&str>)->Result<Capture>, Capture { pub frames:
-  tokio::sync::mpsc::Receiver<Result<Vec<i16>,String>> }; Capture::stop(&mut self)->Result<()>.
-  platform::SingleInstance::acquire()->Result<Self>.
-  platform::set_clipboard(text:&str)->Result<()>.
-- output.rs: deliver(text:&str,config:&OutputConfig) async -> Result<()>;
-  stdin only, bounded script execution, nonzero status errors, clipboard optional for CI.
-- mock.rs: reusable independent network mock and CLI vime-mock;
-  success/duplicate/error/disconnect/timeout/delayed/cancel scenario support.
-- main.rs (root): integrates live mode, config check, connection test,
-  WAV command-line mode for CI, timeout/cancel/error recovery, logging.
+The main thread runs an Iced 0.14 daemon with the tiny-skia renderer. A worker
+thread owns the current-thread Tokio runtime, recording, network, and delivery.
+The native keyboard hook and notification-area icon each own their Windows message
+loop. The UI receives the latest read-only `UiSnapshot` through a watch channel;
+keyboard and tray actions enter one business control queue.
 
-No agents commit/push independently. Each owns assigned files only. Coordinate
-API changes with orchestrator. Tests must prove behavior, never replace Windows
-validation with a claim based on source inspection. Release on tag via Actions.
+- `config.rs`: TOML server, hotkey, output, overlay and tray configuration.
+- `protocol.rs`: documented Realtime transcription subset, PCM upload, commit and
+  incoming delta/final events. Commit acknowledgement identifies the final item.
+- `session.rs`: received text and authoritative final collection.
+- `audio.rs`: WAV normalization and streaming mono 24kHz PCM resampling.
+- `platform.rs`: keyboard hook, named shutdown event, single-instance mutex,
+  WASAPI capture and clipboard.
+- `output.rs`: clipboard and UTF-8 script stdin delivery, bounded execution and
+  final/recovered status. Dropped script futures terminate their direct child.
+- `overlay.rs`: on-demand read-only subtitles, system fonts, advanced shaping,
+  bottom-anchored text, DPI-aware rendering and native nonactivating presentation.
+- `tray.rs`: Show subtitles, Restart and Stop, Explorer restart restoration and
+  native resource cleanup.
+- `main.rs`: CLI diagnostics, desktop lifetime, state publication and recording.
+- `mock.rs`: independent protocol mock; it returns preset text rather than ASR.
+
+Restart cancels active recognition and recreates the keyboard listener using the
+startup configuration. A TOML change applies after Stop and starting vime again.
+The desktop process remains alive with zero visible windows; Stop or the named
+`--stop` signal ends it. CLI diagnostics and WAV mode do not initialize the GUI.
+
+Windows API probes and headless rendering have separate acceptance roles.
+Screenshots validate rendering at specified scale factors; native desktop tests
+validate focus and window lifetime. Neither proves physical microphone access or
+cross-monitor DPI transitions. See `docs/OVERLAY.md` and `docs/TESTING.md`.
