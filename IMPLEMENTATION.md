@@ -2,7 +2,10 @@
 
 Rust no-GUI Windows user-session background client. Default hotkey Alt+F9,
 push-to-talk (press starts, release stops), configurable toggle mode too.
-Final text clipboard and optional script stdin; no auto-paste, ASR model, LLM,
+Final text clipboard and optional script stdin; errors recover received text,
+defaulting to the ordinary script, optionally a separate recovery_command.
+Scripts receive VIME_TRANSCRIPT_STATUS=final/recovered. Cancellation never delivers.
+No auto-paste, ASR model, LLM,
 history, tray, UI, database. Independent WebSocket mock. Self-hosted NAS later.
 Protocol is a documented Realtime-inspired subset, not full OpenAI compatibility.
 
@@ -11,7 +14,7 @@ Architecture:
   ServerConfig { url:String, model:String, api_key_env:Option<String>, connect_timeout_ms:u64,
   final_timeout_ms:u64 }; HotkeyConfig { key:String, mode:HotkeyMode };
   HotkeyMode { PushToTalk, Toggle }; OutputConfig { clipboard:bool,
-  command:Vec<String>, script_timeout_ms:u64 }; Config::load(path), validate().
+  command:Vec<String>, recovery_command:Option<Vec<String>>, script_timeout_ms:u64 }; Config::load(path), validate().
 - protocol.rs: Connection::connect(&ServerConfig) async -> Result<Self>;
   append(&[i16]), commit(), cancel() async; next_event() async -> Result<ServerEvent>.
   ServerEvent { Delta {item_id:String,text:String}, Committed {item_id:String},

@@ -44,9 +44,37 @@ enum Outcome {
     Shutdown,
 }
 
+static CONSOLE_CONTROL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+async fn console_interrupt() {
+    if *CONSOLE_CONTROL.get().unwrap_or(&false) {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            return;
+        }
+        tracing::warn!("console interrupt unavailable; use --stop to shut down");
+    }
+    std::future::pending::<()>().await;
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    platform::attach_parent_console();
+    let diagnostic = std::env::args().skip(1).any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--foreground"
+                | "--check-config"
+                | "--test-connection"
+                | "--wav"
+                | "--help"
+                | "-h"
+                | "--version"
+                | "-V"
+                | "--stop"
+        ) || arg.starts_with("--wav=")
+    });
+    if diagnostic {
+        platform::attach_parent_console();
+    }
     if let Err(error) = run().await {
         tracing::error!(error = %error, "operation failed");
         eprintln!("vime: {error:#}");
@@ -56,6 +84,7 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let args = Args::parse();
+    let _ = CONSOLE_CONTROL.set(args.foreground || args.wav.is_some());
     if args.stop {
         return platform::request_shutdown();
     }
@@ -129,7 +158,7 @@ async fn run() -> Result<()> {
     }
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
+            _ = console_interrupt() => break,
             event = hotkey.events.recv() => match event {
                 Some(ControlEvent::Start) => {
                     match record_live(&config, args.device.as_deref(), &mut hotkey.events).await {
@@ -235,7 +264,7 @@ async fn transcribe_wav(
         loop {
             tokio::select! {
                 biased;
-                _ = tokio::signal::ctrl_c() => return Ok(Outcome::Shutdown),
+                _ = console_interrupt() => return Ok(Outcome::Shutdown),
                 _ = &mut tick => break,
                 event = connection.next_event() => check_recording_event(event?, received)?,
             }
@@ -276,7 +305,7 @@ async fn record_live_inner(
                 Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
                 _ => {},
             },
-            _ = tokio::signal::ctrl_c() => return Ok(Outcome::Shutdown),
+            _ = console_interrupt() => return Ok(Outcome::Shutdown),
             result = &mut connect => break result?,
         }
     };
@@ -288,7 +317,7 @@ async fn record_live_inner(
         }
         tokio::select! {
             biased;
-            _ = tokio::signal::ctrl_c() => return Ok(Outcome::Shutdown),
+            _ = console_interrupt() => return Ok(Outcome::Shutdown),
             event = controls.recv() => match event {
                 Some(ControlEvent::Stop) => { capture.stop()?; break; },
                 Some(ControlEvent::Cancel) => return Ok(Outcome::Cancelled),
@@ -337,7 +366,7 @@ async fn record_live_inner(
                     Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
                     _ => {},
                 },
-                _ = tokio::signal::ctrl_c() => return Ok(Outcome::Shutdown),
+                _ = console_interrupt() => return Ok(Outcome::Shutdown),
                 result = &mut commit => { result?; break; },
             }
         }
@@ -371,7 +400,7 @@ async fn append_audio(
                     Some(ControlEvent::Stop) => { capture.stop()?; *released = true; },
                     _ => {},
                 },
-                _ = tokio::signal::ctrl_c() => return Ok(Some(Outcome::Shutdown)),
+                _ = console_interrupt() => return Ok(Some(Outcome::Shutdown)),
                 result = &mut append => { result?; break; },
             }
         }
@@ -396,7 +425,7 @@ async fn wait_final(
                 Some(ControlEvent::Shutdown) | None => return Ok(Outcome::Shutdown),
                 _ => {},
             },
-            _ = tokio::signal::ctrl_c() => return Ok(Outcome::Shutdown),
+            _ = console_interrupt() => return Ok(Outcome::Shutdown),
             _ = &mut deadline => bail!("final transcription timed out"),
             event = connection.next_event() => {
                 let event = event?;

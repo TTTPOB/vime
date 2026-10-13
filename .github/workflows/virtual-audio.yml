@@ -1,0 +1,28 @@
+name: Optional real WASAPI probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  signed-virtual-cable:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+      - name: Install signed official cable and verify actual PCM
+        shell: pwsh
+        run: ./scripts/virtual-audio-probe.ps1
+      - name: Record explicit capability result
+        if: always()
+        shell: pwsh
+        env:
+          PROBE_STATUS: ${{ job.status }}
+        run: |
+          if ($env:PROBE_STATUS -eq 'success') {
+            'PASS: official signed virtual cable carried a 440 Hz tone through real WASAPI/cpal capture and 24kHz PCM normalization.' >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            'NOT VERIFIED: signed-driver installation or actual WASAPI signal test failed. No signature bypass, certificate import, or runner reboot was attempted. Inspect logs; core CI is separate.' >> $env:GITHUB_STEP_SUMMARY
+          }

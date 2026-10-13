@@ -27,6 +27,11 @@ prints the actual process session; it does not validate client functionality.
   exclusivity and cleanup. `named_shutdown_event_reaches_listener_and_is_cleaned_up`
   signals the actual named shutdown event, receives the listener event, and
   verifies teardown releases the operating system object.
+- `detached_background_client_stays_alive_and_stop_exits_cleanly` launches the
+  actual GUI-subsystem executable with `DETACHED_PROCESS`, requires readiness
+  within three seconds, proves it remains alive without a console, and starts
+  a separate `--stop` process. Both processes must exit successfully within
+  bounded deadlines; failure cleanup kills and reaps any surviving child.
 - `send_input_probe` is ignored during ordinary tests and explicitly invoked
   in Windows CI. It injects Ctrl+Alt+Shift+F11 and requires an actual system
   `WM_HOTKEY` to arrive. An insertion failure or missing message fails the
@@ -55,8 +60,16 @@ cable experiment must install a reviewed, signed driver and feed a known audio
 signal through its playback endpoint into the client's actual capture code.
 It must compare captured duration, sample rate, and signal content; creating
 an output WAV or receiving canned mock text is insufficient evidence.
-The baseline workflows do not install a virtual audio driver and therefore
-make no claim that real WASAPI capture has been validated in CI.
+The core workflows do not install a virtual audio driver. The separately
+dispatched `Optional real WASAPI probe` downloads a pinned official VB-CABLE
+ZIP, checks its SHA-256 and trusted Windows signatures, and runs only the
+original signed vendor installer. It never imports certificates, bypasses
+signing enforcement, or reboots the runner. Installation or endpoint failure
+is reported as NOT VERIFIED. Its ignored `windows_audio` test sends a 440 Hz
+tone through real WASAPI playback and the client capture code, then checks
+24kHz normalized PCM duration, amplitude, and frequency coherence. A passing
+run proves this virtual-device path, while physical microphone and privacy
+checks remain separate.
 
 ## Local Windows acceptance
 
@@ -82,7 +95,10 @@ On the target Windows machine, verify:
 A pushed version tag such as `v0.1.0` triggers the `Release` workflow. It reruns
 Windows formatting, lint, and tests, then packages both release executables,
 the example TOML configuration, README, license, and protocol/testing docs.
-GitHub Release receives the ZIP and SHA-256 checksum. Only that job has
+The packaging script extracts the completed ZIP and runs its executable
+with `--version` and the shipped example configuration with `--check-config`
+before verifying its checksum. GitHub Release receives the ZIP and SHA-256
+checksum. Only that job has
 `contents: write`; ordinary CI has `contents: read`.
 
 The release workflow runs ordinary Windows tests, while the explicit

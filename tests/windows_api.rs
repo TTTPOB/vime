@@ -290,3 +290,101 @@ fn named_shutdown_event_reaches_listener_and_is_cleaned_up() {
         "dropping the listener must release its named event"
     );
 }
+
+struct ChildCleanup(std::process::Child);
+impl Drop for ChildCleanup {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn detached_background_client_stays_alive_and_stop_exits_cleanly() {
+    use std::{
+        os::windows::process::CommandExt,
+        process::{Command, Stdio},
+    };
+    const DETACHED_PROCESS: u32 = 0x00000008;
+    let _guard = DESKTOP_TEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("vime.toml");
+    let log = directory.path().join("vime.log");
+    std::fs::write(&config, include_str!("../vime.example.toml")).unwrap();
+    let mut background = ChildCleanup(
+        Command::new(env!("CARGO_BIN_EXE_vime"))
+            .args([
+                "--config",
+                config.to_str().unwrap(),
+                "--log-file",
+                log.to_str().unwrap(),
+                "--no-clipboard",
+            ])
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let exit = background.0.try_wait().unwrap();
+        let logs = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            exit.is_none(),
+            "detached client exited before readiness: {exit:?}; log: {logs}"
+        );
+        if logs.contains("ready; configured hotkey starts recording") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "detached client never reached readiness; log: {logs}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        background.0.try_wait().unwrap().is_none(),
+        "detached client must remain alive without a console"
+    );
+    let mut stop = ChildCleanup(
+        Command::new(env!("CARGO_BIN_EXE_vime"))
+            .arg("--stop")
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(status) = stop.0.try_wait().unwrap() {
+            assert!(status.success(), "vime --stop exited with {status}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "vime --stop did not terminate");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(status) = background.0.try_wait().unwrap() {
+            assert!(
+                status.success(),
+                "detached client shutdown exited with {status}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "detached client did not exit after --stop"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(std::fs::read_to_string(&log).unwrap().contains("stopped"));
+    println!("PASS: actual detached background executable remained alive and a separate --stop process shut it down cleanly");
+}

@@ -54,6 +54,16 @@ script_timeout_ms = 10000
 
 文本通过 UTF-8 stdin 原样传递，无额外换行，发送完成后关闭 stdin。程序不隐式调用 shell，不把识别文本拼入命令行。脚本应从 stdin 读取全部文本。
 
+Python 脚本在 Windows 上可显式解码 UTF-8，避免依赖系统代码页：
+
+```python
+import os
+import sys
+
+text = sys.stdin.buffer.read().decode("utf-8")
+status = os.environ["VIME_TRANSCRIPT_STATUS"]  # final 或 recovered
+```
+
 脚本环境变量 `VIME_TRANSCRIPT_STATUS` 区分正常结果 `final` 与错误恢复结果 `recovered`，stdin 始终只有纯文本。默认恢复也调用普通 `command`；可设置 `recovery_command = ["程序", "参数"]` 使用独立脚本，或设置 `recovery_command = []` 禁用恢复脚本（仍可更新剪贴板）。
 
 先尝试写剪贴板，再独立尝试运行脚本；剪贴板被占用或写入失败也不会阻止脚本接收文字。所有输出错误合并报告，不自动重试。脚本非零退出或超时会报告失败，已经更新的剪贴板不会回滚。超时会结束直接子进程，首版不管理脚本自己创建的后台子进程。脚本 stdout/stderr 不继承客户端终端，避免转写文字进入常规日志；调试脚本时可让脚本自行记录。
