@@ -19,3 +19,11 @@ command = []
 # recovery_command = ["python", "C:\\scripts\\on_error.py"]
 # recovery_command = [] # 禁用恢复脚本，仍可写入剪贴板
 script_timeout_ms = 10000
+
+# Floating read-only subtitles. Set enabled = false for tray-only operation.
+[overlay]
+enabled = true
+font_family = "Microsoft YaHei UI"
+
+[tray]
+enabled = true

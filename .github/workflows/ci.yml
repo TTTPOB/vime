@@ -19,20 +19,57 @@ jobs:
         with:
           toolchain: 1.99.0
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Install Linux Chinese fonts
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+      - name: Install Windows Chinese fonts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $font = Get-WindowsCapability -Online -Name 'Language.Fonts.Hans*'
+          if ($font.State -ne 'Installed') { Add-WindowsCapability -Online -Name $font.Name }
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --all-targets --locked
       - name: Windows system input probe
         if: runner.os == 'Windows'
         run: cargo test --locked --test windows_api send_input_probe -- --ignored --nocapture
+      - name: Run Linux tests
+        if: runner.os != 'Windows'
+        run: cargo test --all-targets --locked
+      - name: Run Windows tests
+        if: runner.os == 'Windows'
+        # PowerShell-backed output tests share cold runtime startup resources.
+        run: cargo test --all-targets --locked -- --test-threads=1
+      - name: Windows overlay lifecycle probe
+        if: runner.os == 'Windows'
+        run: cargo test --locked --test overlay_windows -- --ignored --nocapture --test-threads=1
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('target/overlay-screenshots/index.html') != ''
+        with:
+          name: overlay-review-${{ runner.os }}
+          path: target/overlay-screenshots/
+          if-no-files-found: error
       - name: Build Windows executables
         if: runner.os == 'Windows'
         run: cargo build --release --locked --bins
+      - name: Measure Windows overlay resources
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/overlay-metrics.ps1
+      - name: Package Windows preview
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object name -eq 'vime').version
+          ./scripts/package.ps1 -Version "v$version"
+          Copy-Item target/overlay-metrics.json dist/overlay-metrics.json
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
         with:
           name: vime-windows-x64
-          path: |
-            target/release/vime.exe
-            target/release/vime-mock.exe
+          path: dist/*
           if-no-files-found: error

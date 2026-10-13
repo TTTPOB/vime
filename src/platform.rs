@@ -96,8 +96,16 @@ pub mod hotkey {
         thread_id: u32,
         #[cfg(windows)]
         resets: std::sync::mpsc::Sender<std::sync::mpsc::SyncSender<()>>,
+        #[cfg(windows)]
+        accept_starts: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
     impl HotkeyListener {
+        /// Keep stop/cancel working while refusing new recordings until reset.
+        pub fn block_new_recordings(&self) {
+            #[cfg(windows)]
+            self.accept_starts
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         pub fn reset(&self) -> Result<()> {
             #[cfg(windows)]
             {
@@ -125,7 +133,22 @@ pub mod hotkey {
     }
     #[cfg(windows)]
     pub fn start(config: &HotkeyConfig) -> Result<HotkeyListener> {
-        windows::start(config)
+        windows::start(config, None)
+    }
+    /// Route keyboard and shutdown events into the desktop's shared control queue.
+    pub fn start_into(
+        config: &HotkeyConfig,
+        sender: mpsc::UnboundedSender<ControlEvent>,
+    ) -> Result<HotkeyListener> {
+        #[cfg(windows)]
+        {
+            windows::start(config, Some(sender))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = sender;
+            start(config)
+        }
     }
     #[cfg(windows)]
     impl Drop for HotkeyListener {
@@ -234,6 +257,7 @@ pub mod hotkey {
             held: bool,
             active: bool,
             sender: mpsc::UnboundedSender<ControlEvent>,
+            accept_starts: std::sync::Arc<std::sync::atomic::AtomicBool>,
         }
         thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
         fn is_modifier(key: u32, expected: u32) -> bool {
@@ -272,7 +296,9 @@ pub mod hotkey {
                                 if matches!(s.mode, HotkeyMode::Toggle) && s.active {
                                     s.active = false;
                                     let _ = s.sender.send(ControlEvent::Stop);
-                                } else if !s.active {
+                                } else if !s.active
+                                    && s.accept_starts.load(std::sync::atomic::Ordering::Relaxed)
+                                {
                                     s.active = true;
                                     let _ = s.sender.send(ControlEvent::Start);
                                 }
@@ -283,12 +309,18 @@ pub mod hotkey {
             }
             CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
         }
-        pub fn start(config: &HotkeyConfig) -> Result<HotkeyListener> {
+        pub fn start(
+            config: &HotkeyConfig,
+            external: Option<mpsc::UnboundedSender<ControlEvent>>,
+        ) -> Result<HotkeyListener> {
             let (key, modifiers) = parse_key(&config.key)?;
             let mode = config.mode;
             let (sender, events) = mpsc::unbounded_channel();
+            let sender = external.unwrap_or(sender);
             let (ready_tx, ready_rx) = sync::sync_channel(1);
             let (reset_tx, reset_rx) = sync::channel::<sync::SyncSender<()>>();
+            let accept_starts = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let hook_accept_starts = accept_starts.clone();
             let thread = std::thread::spawn(move || unsafe {
                 // Force creation of the message queue before publishing the thread id.
                 let mut message: MSG = std::mem::zeroed();
@@ -301,6 +333,7 @@ pub mod hotkey {
                         held: false,
                         active: false,
                         sender,
+                        accept_starts: hook_accept_starts,
                     })
                 });
                 let hook = SetWindowsHookExW(
@@ -334,6 +367,9 @@ pub mod hotkey {
                             STATE.with(|s| {
                                 if let Some(state) = s.borrow_mut().as_mut() {
                                     state.active = false;
+                                    state
+                                        .accept_starts
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
                                 }
                             });
                             let _ = ack.send(());
@@ -362,6 +398,7 @@ pub mod hotkey {
                     thread: Some(thread),
                     thread_id,
                     resets: reset_tx,
+                    accept_starts,
                 }),
                 Err(error) => {
                     let _ = thread.join();

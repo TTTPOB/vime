@@ -212,6 +212,7 @@ fn platform_send_input_probe() {
                     .unwrap(),
                 Some(ControlEvent::Start)
             );
+            listener.block_new_recordings();
             // A repeated keydown must not trigger another Start or toggle off.
             inject_keys(&[(VK_F9, false)]);
             assert!(
@@ -237,10 +238,31 @@ fn platform_send_input_probe() {
             if toggle {
                 inject_keys(&[(VK_F9, true), (VK_MENU, true)]);
             }
+            // While finalizing, a fresh full key press is ignored at the hook.
+            inject_keys(&[
+                (VK_MENU, false),
+                (VK_F9, false),
+                (VK_F9, true),
+                (VK_MENU, true),
+            ]);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), listener.events.recv())
+                    .await
+                    .is_err()
+            );
+            listener.reset().unwrap();
+            inject_keys(&[(VK_MENU, false), (VK_F9, false)]);
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(3), listener.events.recv())
+                    .await
+                    .unwrap(),
+                Some(ControlEvent::Start)
+            );
+            inject_keys(&[(VK_F9, true), (VK_MENU, true)]);
             drop(listener);
         }
     });
-    println!("PASS: client hotkey listener handles push-to-talk, toggle, release, and repeated keydown via SendInput");
+    println!("PASS: busy-time starts are blocked until reset; client hotkey listener handles push-to-talk, toggle, release, and repeated keydown via SendInput");
 }
 
 #[test]
@@ -381,7 +403,8 @@ fn detached_background_client_stays_alive_and_stop_exits_cleanly() {
         }
         assert!(
             Instant::now() < deadline,
-            "detached client did not exit after --stop"
+            "detached client did not exit after --stop; log: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(20));
     }
